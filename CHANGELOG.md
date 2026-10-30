@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fixed the release smoke test failing on macOS runners that refuse unsigned frameworks: it now ad-hoc signs the extracted copy of the unsigned Homebrew archive before running it.
 - Fixed `axe screenshot` on foldable simulators capturing the inner display even while the cover display was active, which produced a black image when folded.
 - Fixed touch commands (`tap`, `swipe`, `drag`, `slider`, `gesture`, `touch`, and batch touch steps) reporting success without delivering input on a foldable simulator whose inner display is active. They now fail with an explicit error until inner-display touch delivery is supported. Coordinate detection on that display now reads its orientation and size from devicectl instead of the cover screen.
 - Fixed AXe errors that are wrapped in another message, such as `axe batch` step failures, showing a generic system message instead of the underlying AXe error.
