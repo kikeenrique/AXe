@@ -331,6 +331,28 @@ struct FoldableTouchGuardTests {
 
 @Suite("Screenshot capture decision")
 struct ScreenshotCaptureTests {
+    @Test("A capture is kept after a runner failure only when simctl wrote a PNG")
+    func pngDetection() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("axe-png-detection-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let png = directory.appendingPathComponent("shot.png")
+        try Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00]).write(to: png)
+        #expect(SimulatorDisplays.isPNGFile(at: png))
+
+        let truncated = directory.appendingPathComponent("short.png")
+        try Data([0x89, 0x50]).write(to: truncated)
+        #expect(!SimulatorDisplays.isPNGFile(at: truncated))
+
+        let text = directory.appendingPathComponent("text.png")
+        try Data("not a png".utf8).write(to: text)
+        #expect(!SimulatorDisplays.isPNGFile(at: text))
+
+        #expect(!SimulatorDisplays.isPNGFile(at: directory.appendingPathComponent("missing.png")))
+    }
+
     @Test("Without display state, auto uses the framebuffer and IDs or names pass through")
     func noState() throws {
         #expect(try ScreenshotCapture.resolve(selection: .auto, state: nil) == .framebuffer)

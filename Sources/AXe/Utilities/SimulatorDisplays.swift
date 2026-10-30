@@ -469,7 +469,8 @@ extension FBSimulatorHIDEvent {
 enum SimulatorDisplays {
     nonisolated static let foldableDeviceTypeMarker = "iPhone-Duo"
     nonisolated static let devicectlTimeout: TimeInterval = 10
-    nonisolated static let screenshotTimeout: TimeInterval = 10
+    // simctl writes the PNG within about a second but can take over 10 s to exit on a loaded host.
+    nonisolated static let screenshotTimeout: TimeInterval = 30
 
     /// Policy supplied by a client process. The hid-broker sets it per request so a long-lived
     /// broker follows the `AXE_DISPLAY_PROBE` value of the command it serves, not its own.
@@ -671,15 +672,32 @@ enum SimulatorDisplays {
         to outputURL: URL,
         timeout: TimeInterval = screenshotTimeout
     ) async throws {
-        let result = try await XcrunProcess.run(
-            ["simctl", "io", simulatorUDID, "screenshot", "--type=png", "--display=\(display)", outputURL.path],
-            timeout: timeout
-        )
+        let result: ProcessResult
+        do {
+            result = try await XcrunProcess.run(
+                ["simctl", "io", simulatorUDID, "screenshot", "--type=png", "--display=\(display)", outputURL.path],
+                timeout: timeout
+            )
+        } catch {
+            // simctl writes the file before it exits; a slow exit must not discard a good capture.
+            guard Self.isPNGFile(at: outputURL) else { throw error }
+            FileHandle.standardError.write(Data("Warning: simctl did not exit cleanly after writing \(outputURL.path); keeping the capture.\n".utf8))
+            return
+        }
         guard result.status == 0 else {
             let detail = result.failureDetail
             throw CLIError(
                 errorDescription: "AXe could not capture display \(display) of simulator \(simulatorUDID)" + (detail.isEmpty ? "." : ": \(detail)")
             )
         }
+    }
+
+    /// True when the file exists and starts with the PNG signature.
+    nonisolated static func isPNGFile(at url: URL) -> Bool {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return false }
+        defer { try? handle.close() }
+        let signature: [UInt8] = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]
+        guard let header = try? handle.read(upToCount: signature.count) else { return false }
+        return Array(header) == signature
     }
 }
