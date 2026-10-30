@@ -161,48 +161,76 @@ struct TouchTarget: Equatable {
     /// foreign-sized is converted from native to interface space. A root without a frame falls back
     /// to the window shape: a native-shaped window on a quarter-turned panel is converted.
     ///
+    /// The root's own frame becomes the display's interface bounds when it is foreign-sized
+    /// (SpringBoard) or native-shaped on a quarter-turned panel (an app at rot90/rot270 reports
+    /// 669x951); any other root frame is kept.
+    ///
     /// A root whose windows all belong to other displays is dropped.
     ///
     /// - Throws: when the tree has windows but none of them belongs to the active panel (for
     ///   example a tree read while the panel switched); resolving against the other panel's windows
     ///   would bring back double matches or convert the wrong coordinates.
     func activePanelRoots(_ roots: [AccessibilityElement]) throws -> [AccessibilityElement] {
+        try activePanelRoots(roots, consequence: "No touch was sent.")
+    }
+
+    /// `activePanelRoots(_:)` for any accessibility tree representation. `consequence` completes
+    /// the error message, for example "No touch was sent."
+    func activePanelRoots<Tree: AccessibilityFrameTree>(_ roots: [Tree], consequence: String) throws -> [Tree] {
         guard !isMain else { return roots }
-        var panelRoots: [AccessibilityElement] = []
+        var panelRoots: [Tree] = []
         var hasWindows = false
         var keptWindows = false
         for root in roots {
             guard let children = root.children, !children.isEmpty else {
-                panelRoots.append(root)
+                panelRoots.append(interfaceRoot(root))
                 continue
             }
             hasWindows = true
             let kept = children.filter { !isForeignSized($0.frame) }
             guard !kept.isEmpty else { continue }
             keptWindows = true
-            panelRoots.append(root.replacingChildren(kept.map { interfaceWindow($0, under: root) }))
+            panelRoots.append(interfaceRoot(root).replacingChildren(kept.map { interfaceWindow($0, under: root) }))
         }
         guard keptWindows || !hasWindows else {
             throw CLIError(
-                errorDescription: "The accessibility tree has no window on display \(displayID), the active display; it may have been read while the simulator folded or unfolded. No touch was sent. Run `axe posture` and try again."
+                errorDescription: "The accessibility tree has no window on display \(displayID), the active display; it may have been read while the simulator folded or unfolded. \(consequence) Run `axe posture` and try again."
             )
         }
         return panelRoots
     }
 
     /// True when the frames of `window` (a direct child of `root`) are in native portrait space.
-    func isNativeSpaceWindow(_ window: AccessibilityElement, under root: AccessibilityElement) -> Bool {
+    func isNativeSpaceWindow<Tree: AccessibilityFrameTree>(_ window: Tree, under root: Tree) -> Bool {
         guard rotation != .rot0 else { return false }
         if let rootFrame = root.frame {
             return isForeignSized(rootFrame)
         }
-        guard rotation == .rot90 || rotation == .rot270, let frame = window.frame else { return false }
+        guard isQuarterTurn, let frame = window.frame else { return false }
         return Self.sizeMatches(frame, nativePointSize)
     }
 
-    private func interfaceWindow(_ window: AccessibilityElement, under root: AccessibilityElement) -> AccessibilityElement {
+    private var isQuarterTurn: Bool {
+        rotation == .rot90 || rotation == .rot270
+    }
+
+    private func interfaceWindow<Tree: AccessibilityFrameTree>(_ window: Tree, under root: Tree) -> Tree {
         guard isNativeSpaceWindow(window, under: root) else { return window }
-        return window.mappingFrames { interfaceRect(fromNative: $0) }
+        // An all-zero frame means "no frame" (SpringBoard reports it for some off-page icons);
+        // converting it would place the element at a panel corner.
+        return window.mappingFrames { Self.isZero($0) ? $0 : interfaceRect(fromNative: $0) }
+    }
+
+    private static func isZero(_ frame: AccessibilityElement.Frame) -> Bool {
+        frame.x == 0 && frame.y == 0 && frame.width == 0 && frame.height == 0
+    }
+
+    private func interfaceRoot<Tree: AccessibilityFrameTree>(_ root: Tree) -> Tree {
+        guard let frame = root.frame,
+              isForeignSized(frame) || (isQuarterTurn && Self.sizeMatches(frame, nativePointSize)) else {
+            return root
+        }
+        return root.replacingFrame(interfaceBounds)
     }
 
     private func isForeignSized(_ frame: AccessibilityElement.Frame?) -> Bool {
@@ -236,7 +264,7 @@ struct TouchTarget: Equatable {
               pointScale > 0, nativeSize.width > 0, nativeSize.height > 0 else {
             if isMain { return nil }
             throw CLIError(
-                errorDescription: "AXe could not convert touch coordinates because devicectl did not report the orientation and size of display \(active.displayId) (\(active.name))."
+                errorDescription: "AXe could not convert coordinates for display \(active.displayId) (\(active.name)) because devicectl did not report its orientation and size."
             )
         }
         let activePoints = active.nativeSizePoints

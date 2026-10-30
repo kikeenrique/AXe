@@ -7,7 +7,7 @@ description: Provides agent-ready AXe CLI usage guidance for iOS Simulator autom
 1. Identify simulator UDID target first (`axe list-simulators`).
 2. Simulator-interaction AXe commands require `--udid <UDID>`. Commands like `list-simulators` and `init` do not.
 3. Run `axe describe-ui --udid <UDID>` to inspect the full current screen. Use `axe describe-ui --point <X,Y> --udid <UDID>` to inspect the element at a specific coordinate. Use the output to discover available `--id` and `--label` values for selector taps and slider setting, and to confirm coordinates for coordinate-based taps.
-   On a foldable simulator (iPhone Duo) run `axe posture --udid <UDID>` first. While the inner display is active, `describe-ui` can list both displays' windows (home-screen labels and IDs appear twice, with frames in the inner display's native portrait points) and `--point` hit-tests the cover display only. Selector taps and `slider` still resolve against the active display only, so prefer selectors there; take `-x/-y` from `axe screenshot` (pixels / 3), not from those frames. On the folded cover, home-screen frames can also differ from the visible layout, so confirm targets with a screenshot.
+   On a foldable simulator (iPhone Duo) run `axe posture --udid <UDID>` first. While the inner display is active, `describe-ui` reports only that display's windows with frames in its interface points (the same space as `-x/-y` and `axe screenshot` pixels / 3), and `--point <X,Y>` takes interface points of that display. `describe-ui --all-displays` prints the raw tree of both displays (labels twice, SpringBoard frames in native portrait points); use it only for debugging. A stderr warning "could not determine the active display" means the output is that raw tree. On the folded cover, home-screen frames can differ from the visible layout, so confirm targets with a screenshot.
 4. Prefer selectors (`tap --id` / `tap --label`, `slider --id` / `slider --label`) over raw coordinates. Selectors are resilient to layout changes, work across device sizes, and support element waiting where documented. For UIKit `UISwitch` and SwiftUI `Toggle` rows, selector taps activate the contained switch/toggle when the match contains exactly one such control. Default tap style is `automatic`: switches/toggles use physical touch down/up, while normal taps use simulator `tapAt`.
 
 ## Step 2: Choose the right command
@@ -89,7 +89,7 @@ axe describe-ui --point <X,Y> --udid <UDID>
 axe screenshot --udid <UDID> --output post-state.png
 ```
 
-On a foldable, verify with `axe screenshot` and `axe posture --json` rather than `describe-ui` frames or `describe-ui --point` (see Step 1): with the inner display active, home-screen frames are in the panel's native coordinate space, and on the folded cover home-screen frames can differ from the visible layout.
+On a foldable, also check `axe posture --json` after a fold. `describe-ui` frames and `--point` match the active display's screenshot (see Step 1), except on the folded cover, where home-screen frames can differ from the visible layout; verify there with `axe screenshot`.
 
 ## Step 7: Exit criteria
 Before finalising guidance, verify:

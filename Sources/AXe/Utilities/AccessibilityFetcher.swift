@@ -37,15 +37,77 @@ struct AccessibilityFetcher {
         logger: AxeLogger,
         recoveryDependencies: AccessibilityRecoveryDependencies = .live
     ) async throws -> Data {
+        let target = try await simulator(udid: simulatorUDID, logger: logger)
+        return try await fetchAccessibilityInfoJSONData(
+            from: target,
+            simulatorUDID: simulatorUDID,
+            point: point,
+            logger: logger,
+            recoveryDependencies: recoveryDependencies
+        )
+    }
+
+    /// describe-ui's JSON.
+    ///
+    /// On the non-main active display of a foldable (the inner display), the frontmost tree is
+    /// reduced to that display's windows with interface-point frames, and `point` (an interface
+    /// point) is hit-tested against that tree in AXe, because the simulator's hit test only knows
+    /// the main display (see `DescribeUIOutput`). Elsewhere, or with `allDisplays`, the
+    /// simulator's output is returned unchanged.
+    static func fetchDescribeUIJSONData(
+        for simulatorUDID: String,
+        point: AccessibilityPoint?,
+        allDisplays: Bool,
+        logger: AxeLogger,
+        recoveryDependencies: AccessibilityRecoveryDependencies = .live
+    ) async throws -> Data {
+        let simulator = try await simulator(udid: simulatorUDID, logger: logger)
+        let displayTarget = await DescribeUIOutput.displayTarget(allDisplays: allDisplays) {
+            try await SimulatorDisplays.state(for: simulator, logger: logger)
+        }
+        guard let displayTarget else {
+            return try await fetchAccessibilityInfoJSONData(
+                from: simulator,
+                simulatorUDID: simulatorUDID,
+                point: point,
+                logger: logger,
+                recoveryDependencies: recoveryDependencies
+            )
+        }
+        let tree = try await fetchAccessibilityInfoJSONData(
+            from: simulator,
+            simulatorUDID: simulatorUDID,
+            point: nil,
+            logger: logger,
+            recoveryDependencies: recoveryDependencies
+        )
+        if let point {
+            logger.info().log("describe-ui: hit-testing (\(point.x), \(point.y)) in the interface-point tree of display \(displayTarget.displayID); --all-displays uses the simulator's hit test")
+            return try DescribeUIOutput.elementData(at: point, in: tree, target: displayTarget)
+        }
+        logger.info().log("describe-ui: reporting the windows of display \(displayTarget.displayID) in interface points; --all-displays prints the unfiltered tree")
+        return try DescribeUIOutput.panelTreeData(tree, target: displayTarget)
+    }
+
+    private static func simulator(udid simulatorUDID: String, logger: AxeLogger) async throws -> FBSimulator {
         let simulatorSet = try await getSimulatorSet(deviceSetPath: nil, logger: logger, reporter: EmptyEventReporter.shared)
-        
+
         guard let target = simulatorSet.allSimulators.first(where: { $0.udid == simulatorUDID }) else {
             throw CLIError.simulatorNotFound(udid: simulatorUDID)
         }
         // Lets the coordinate mapper's display probe reuse this lookup instead of creating another set.
         SimulatorDisplays.recordDeviceType(for: target)
+        return target
+    }
 
-        return try await retryingAfterTestManagerRecovery(
+    private static func fetchAccessibilityInfoJSONData(
+        from target: FBSimulator,
+        simulatorUDID: String,
+        point: AccessibilityPoint?,
+        logger: AxeLogger,
+        recoveryDependencies: AccessibilityRecoveryDependencies
+    ) async throws -> Data {
+        try await retryingAfterTestManagerRecovery(
             simulatorUDID: simulatorUDID,
             logger: logger,
             dependencies: recoveryDependencies

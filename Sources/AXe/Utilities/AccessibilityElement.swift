@@ -1,6 +1,17 @@
 import Foundation
 
-struct AccessibilityElement: Decodable {
+/// An accessibility tree whose frames can be filtered and converted per display (see
+/// `TouchTarget.activePanelRoots`). Implemented by the decoded `AccessibilityElement` used for
+/// selectors and by `DescribedElement`, which keeps describe-ui's full JSON schema.
+protocol AccessibilityFrameTree {
+    var frame: AccessibilityElement.Frame? { get }
+    var children: [Self]? { get }
+    func replacingChildren(_ children: [Self]) -> Self
+    func replacingFrame(_ frame: AccessibilityElement.Frame) -> Self
+    func mappingFrames(_ transform: (AccessibilityElement.Frame) -> AccessibilityElement.Frame) -> Self
+}
+
+struct AccessibilityElement: Decodable, AccessibilityFrameTree {
     private static let actionableTypes: Set<String> = [
         "Button",
         "Cell",
@@ -81,6 +92,11 @@ struct AccessibilityElement: Decodable {
 
     /// A copy of the element with different children.
     func replacingChildren(_ children: [AccessibilityElement]) -> AccessibilityElement {
+        AccessibilityElement(copying: self, frame: frame, children: children)
+    }
+
+    /// A copy of the element with a different frame; the children are unchanged.
+    func replacingFrame(_ frame: Frame) -> AccessibilityElement {
         AccessibilityElement(copying: self, frame: frame, children: children)
     }
 

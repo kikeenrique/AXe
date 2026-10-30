@@ -217,9 +217,10 @@ See `batch-reference.md` for full batch semantics. Foldable simulators: touch st
 ```bash
 axe describe-ui --udid <UDID>                      # Full screen
 axe describe-ui --point 100,200 --udid <UDID>      # Specific point
+axe describe-ui --all-displays --udid <UDID>       # Foldable: raw tree of every display
 ```
 
-Foldable simulators: with the inner display active, `describe-ui` can list the windows of both displays; on the home screen labels and identifiers appear twice, with frames in the inner display's native portrait points. Selector taps resolve against the active display only. `--point` hit-tests the cover display only. On the folded cover, home-screen frames can also differ from the visible layout. Verify with `axe screenshot` and `axe posture` instead.
+Foldable simulators: with the inner display active, `describe-ui` reports only that display's windows, with `frame`/`AXFrame` in its interface points (as `axe screenshot` shows it, pixels / 3), so labels and identifiers appear once and the JSON schema is unchanged. `--point X,Y` takes interface points of the inner display; AXe hit-tests the reported tree (windows front to back, later windows taken as in front; the deepest element containing the point, preferring a label or value over an identifier only) and prints that element. If the active display cannot be determined, `describe-ui` warns on stderr and prints the unfiltered tree. `--all-displays` prints the simulator's unfiltered tree: both displays' windows, home-screen labels twice, SpringBoard frames in native portrait points, and `--point` hit-tested on the cover only. With the cover active, output is unchanged; home-screen frames there can differ from the visible layout, so verify with `axe screenshot`.
 
 ## Foldable simulators (hinge, posture, rotate)
 

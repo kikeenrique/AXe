@@ -12,11 +12,17 @@ struct DescribeUI: AsyncParsableCommand {
     @Option(
         name: .customLong("point"),
         help: ArgumentHelp(
-            "Describe only the accessibility element at screen coordinates x,y.",
+            "Describe only the accessibility element at screen coordinates x,y. On a foldable, x,y are interface points of the active display, as `axe screenshot` shows it.",
             valueName: "x,y"
         )
     )
     var point: String?
+
+    @Flag(
+        name: .customLong("all-displays"),
+        help: "On a foldable with the inner display active, print the simulator's unfiltered tree (every display's windows, frames as reported) instead of the active display's elements in interface points. With --point, use the simulator's hit test, which covers the cover display only."
+    )
+    var allDisplays = false
 
     func validate() throws {
         _ = try parsedPoint()
@@ -26,9 +32,10 @@ struct DescribeUI: AsyncParsableCommand {
         let logger = AxeLogger()
         try await performGlobalSetup(logger: logger)
 
-        let jsonData = try await AccessibilityFetcher.fetchAccessibilityInfoJSONData(
+        let jsonData = try await AccessibilityFetcher.fetchDescribeUIJSONData(
             for: simulatorUDID,
             point: try parsedPoint(),
+            allDisplays: allDisplays,
             logger: logger
         )
         guard let jsonString = String(data: jsonData, encoding: .utf8) else {
