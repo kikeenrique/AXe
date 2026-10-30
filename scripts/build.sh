@@ -1,5 +1,5 @@
 #!/bin/bash
-# Builds the required IDB Frameworks for the AXe project.
+# Builds the IDB static libraries AXe links, then the AXe executable and its release payload.
 
 set -e
 set -o pipefail
@@ -55,23 +55,55 @@ load_env_file "${ENV_FILE}"
 DEFAULT_IDB_CHECKOUT_DIR="${REPO_ROOT}/idb_checkout"
 IDB_CHECKOUT_DIR="${IDB_CHECKOUT_DIR:-${DEFAULT_IDB_CHECKOUT_DIR}}"
 IDB_CHECKOUT_DIR="$(cd "$(dirname "$IDB_CHECKOUT_DIR")" && pwd)/$(basename "$IDB_CHECKOUT_DIR")"
-IDB_GIT_URL="${IDB_GIT_URL:-https://github.com/cameroncooke/idb.git}"
-DEFAULT_IDB_GIT_REF="604c51013438f0c3603b720a05a44b7c5b8f286d"
+# Upstream facebook/idb, pinned to the immutable commit of tag v1.7.7. IDB_GIT_URL/IDB_GIT_REF
+# overrides are for local development only: refuse_idb_override_in_release_mode rejects them in
+# release commands and on CI. (release-shared.yml parses the two lines below; keep their shape.)
+DEFAULT_IDB_GIT_URL="https://github.com/facebook/idb.git"
+IDB_GIT_URL="${IDB_GIT_URL:-https://github.com/facebook/idb.git}"
+DEFAULT_IDB_GIT_REF="1de1629a8e5e9838d841689e122d0bd0085a92b6"
 IDB_GIT_REF="${IDB_GIT_REF:-${DEFAULT_IDB_GIT_REF}}"
-IDB_UPSTREAM_BASE_REF="${IDB_UPSTREAM_BASE_REF:-e682506725e9efefb9c43b8b917c0b12eb2a5939}"
 BUILD_OUTPUT_DIR="${BUILD_OUTPUT_DIR:-./build_products}"
 DERIVED_DATA_PATH="${DERIVED_DATA_PATH:-./build_derived_data}"
-BUILD_XCFRAMEWORK_DIR="${BUILD_XCFRAMEWORK_DIR:-${BUILD_OUTPUT_DIR}/XCFrameworks}"
+# Static archives, Swift modules and the simulator helper AXe consumes. Package.swift reads
+# build_products/idb/lib, so a non-default BUILD_OUTPUT_DIR only suits the release steps.
+IDB_PRODUCTS_DIR="${BUILD_OUTPUT_DIR}/idb"
+IDB_LIBRARY_DIR="${IDB_PRODUCTS_DIR}/lib"
+IDB_BRIDGE_DIR="${IDB_PRODUCTS_DIR}/bridge"
 FBSIMCONTROL_PROJECT="${IDB_CHECKOUT_DIR}/FBSimulatorControl.xcodeproj"
+SIMULATOR_BRIDGE_PROJECT="${IDB_CHECKOUT_DIR}/SimulatorFrameworkBridge/SimulatorFrameworkBridge.xcodeproj"
 TEMP_DIR="${TEMP_DIR:-$(mktemp -d)}"
 IDB_REPLACEMENT_ROOT=""
+
+# The IDB libraries AXe links, in link order. Keep in sync with `idbArchives` in Package.swift.
+# Every one except FBControlCoreObjC (Objective-C, module map in the checkout) has a Swift module.
+IDB_LIBRARIES=(
+  "FBSimulatorAX"
+  "FBSimulatorServices"
+  "FBSimulatorVideo"
+  "FBVideoCore"
+  "FBSimulatorControl"
+  "FBSimulatorBridgeProtocol"
+  "SimulatorIPC"
+  "FBControlCore"
+  "FBControlCoreObjC"
+  "IDBConcurrency"
+)
+
+# The in-simulator helper FBSimulatorServices/FBSimulatorAX spawn in the guest (accessibility on
+# multi-display simulators, services). Upstream's BundledResources.directoryPath() finds it, for a
+# standalone binary, in a `Resources/` directory beside the resolved executable path; a host may
+# instead set BundledResources.hostDirectoryPath. The release payload therefore ships it as
+# `Resources/SimulatorFrameworkBridge-iOS` next to `axe` (see release-payload.sh). It is built for
+# the iOS Simulator and ad-hoc signed with its entitlements by its own project: never re-sign it.
+SIMULATOR_BRIDGE_NAME="SimulatorFrameworkBridge-iOS"
 
 # Shared payload helper
 # shellcheck source=./release-payload.sh
 source "${SCRIPT_DIR}/release-payload.sh"
 
-FRAMEWORK_SDK="macosx"
-FRAMEWORK_CONFIGURATION="Release"
+LIBRARY_CONFIGURATION="Release"
+# Upstream builds arm64 only (ARCHS=arm64 in its build.sh); AXe ships Apple silicon only.
+TARGET_ARCH="arm64"
 
 # Codesigning configuration.
 # Provided via AXE_CODESIGN_IDENTITY (from .env locally, or the environment / CI
@@ -96,11 +128,6 @@ function require_config() {
 }
 
 # --- Helper Functions ---
-
-# Temporarily disable xcpretty to see actual errors in CI
-# if hash xcpretty 2>/dev/null; then
-#   HAS_XCPRETTY=true
-# fi
 
 # Function to print a section header with emoji
 function print_section() {
@@ -136,6 +163,13 @@ function print_info() {
 function print_warning() {
   local message="$1"
   echo "⚠️  ${message}"
+}
+
+# Absolute form of a directory path (relative paths resolve against the current directory).
+function absolute_dir() {
+  local dir="$1"
+  mkdir -p "$dir"
+  (cd "$dir" && pwd)
 }
 
 function remove_idb_replacement() {
@@ -215,91 +249,61 @@ function verify_macho_has_arch() {
   fi
 }
 
-function verify_fbsimulatorcontrol_fork_features() {
+# Exactly the given architectures, nothing else (the release is Apple silicon only).
+function verify_macho_archs_exactly() {
   local binary_path="$1"
+  local expected_archs="$2"
 
   if [[ ! -f "$binary_path" ]]; then
-    echo "❌ Error: FBSimulatorControl binary not found for fork feature verification: $binary_path"
+    echo "❌ Error: Binary not found for architecture verification: $binary_path"
     exit 1
   fi
 
-  local required_references=(
-    "setClientType:"
-    "XCUIDeviceRemoteAutomationSession"
-    "enableAutomationModeWithError:"
-    "loadAccessibilityWithTimeout:reply:"
-    "transportType"
-  )
-  local reference
-  for reference in "${required_references[@]}"; do
-    if ! strings -a "$binary_path" | grep -F "$reference" >/dev/null; then
-      echo "❌ Error: FBSimulatorControl is missing required fork feature evidence: ${reference}"
-      echo "   Checked binary: $binary_path"
-      echo "   Expected fork revision: ${IDB_GIT_URL}@${IDB_GIT_REF}"
-      echo "   Re-run setup, generation, and the framework build."
-      exit 1
-    fi
-  done
-
-  local framework_contents
-  framework_contents=$(dirname "$binary_path")
-  local public_module_artifacts=(
-    "${framework_contents}/Modules/FBSimulatorControl.swiftmodule/arm64-apple-macos.swiftinterface"
-    "${framework_contents}/Modules/FBSimulatorControl.swiftmodule/x86_64-apple-macos.swiftinterface"
-    "${framework_contents}/Headers/FBSimulatorControl-Swift.h"
-  )
-  local compiled_swift_modules=(
-    "${framework_contents}/Modules/FBSimulatorControl.swiftmodule/arm64-apple-macos.swiftmodule"
-    "${framework_contents}/Modules/FBSimulatorControl.swiftmodule/x86_64-apple-macos.swiftmodule"
-  )
-  local compiled_swift_module
-  for compiled_swift_module in "${compiled_swift_modules[@]}"; do
-    if [[ ! -f "${compiled_swift_module}" ]]; then
-      echo "❌ Error: FBSimulatorControl compiled Swift module is missing: ${compiled_swift_module}"
-      echo "   Textual reconstruction is not viable because the module and public class share a name."
-      exit 1
-    fi
-  done
-  local artifact
-  for artifact in "${public_module_artifacts[@]}"; do
-    if [[ ! -f "$artifact" ]]; then
-      echo "❌ Error: FBSimulatorControl public module artifact is missing: ${artifact}"
-      exit 1
-    fi
-    if grep -E 'AccessibilityPlatformTranslation|AXP[A-Za-z]' "$artifact" >/dev/null; then
-      echo "❌ Error: FBSimulatorControl leaks AccessibilityPlatformTranslation through its public interface"
-      echo "   Leaking artifact: ${artifact}"
-      echo "   Rebuild from the pinned AXe IDB fork revision."
-      exit 1
-    fi
-  done
-
-  if ! grep -F 'FBAccessibilityElement' "${public_module_artifacts[0]}" >/dev/null ||
-    ! grep -F 'accessibilityElementForFrontmostApplication' "${public_module_artifacts[0]}" >/dev/null
-  then
-    echo "❌ Error: FBSimulatorControl lost the public AXe accessibility command surface"
-    echo "   Checked: ${public_module_artifacts[0]}"
+  local archs
+  archs=$(lipo -archs "$binary_path" 2>/dev/null || true)
+  if [[ "$archs" != "$expected_archs" ]]; then
+    echo "❌ Error: Expected only '${expected_archs}' in $binary_path, found '${archs:-<none>}'"
     exit 1
   fi
-
-  print_success "FBSimulatorControl contains required fork features without leaking private accessibility framework types"
 }
 
-# Function to invoke xcodebuild, optionally with xcpretty
-function invoke_xcodebuild() {
-  local arguments=("$@")
-  print_info "Executing: xcodebuild ${arguments[*]}"
+# The simulator helper must be an iOS Simulator arm64 binary whose own signature still verifies.
+function verify_simulator_bridge() {
+  local bridge_path="$1"
 
-  local exit_code
-  if [[ -n $HAS_XCPRETTY ]]; then
-    NSUnbufferedIO=YES xcodebuild "${arguments[@]}" | xcpretty -c
-    exit_code=${PIPESTATUS[0]}
-  else
-    xcodebuild "${arguments[@]}" 2>&1
-    exit_code=$?
+  if [[ ! -f "$bridge_path" || ! -x "$bridge_path" ]]; then
+    echo "❌ Error: ${SIMULATOR_BRIDGE_NAME} missing or not executable: $bridge_path"
+    exit 1
   fi
+  verify_macho_has_arch "$bridge_path" "$TARGET_ARCH"
+  if ! xcrun vtool -show-build "$bridge_path" 2>/dev/null | grep -q "IOSSIMULATOR"; then
+    echo "❌ Error: ${SIMULATOR_BRIDGE_NAME} is not built for the iOS Simulator: $bridge_path"
+    exit 1
+  fi
+  if ! codesign --verify --strict "$bridge_path" >/dev/null 2>&1; then
+    echo "❌ Error: ${SIMULATOR_BRIDGE_NAME} signature does not verify (it must never be re-signed): $bridge_path"
+    exit 1
+  fi
+}
 
-  return $exit_code
+# Function to invoke xcodebuild with upstream IDB's common settings
+# (scripts `invoke_xcodebuild` in facebook/idb build.sh).
+function invoke_xcodebuild() {
+  local xcodebuild_root
+  xcodebuild_root="$(absolute_dir "${DERIVED_DATA_PATH}")"
+  local arguments=(
+    -skipMacroValidation
+    ENABLE_USER_SCRIPT_SANDBOXING=NO
+    CLANG_ENABLE_EXPLICIT_MODULES=NO
+    ARCHS="${TARGET_ARCH}"
+    ONLY_ACTIVE_ARCH=NO
+    SYMROOT="${xcodebuild_root}/Products"
+    OBJROOT="${xcodebuild_root}/Intermediates"
+    -derivedDataPath "${xcodebuild_root}"
+    "$@"
+  )
+  print_info "Executing: xcodebuild ${arguments[*]}"
+  xcodebuild "${arguments[@]}" 2>&1
 }
 
 function swift_build_bin_path() {
@@ -312,27 +316,31 @@ function copy_resource_bundle() {
   local output_base_dir="$1"
   local bundle_name="AXe_AXe.bundle"
   local bundle_dest="${output_base_dir}/${bundle_name}"
-  local bundle_source=""
-  local candidate_dir=""
+  local bundle_source
+  bundle_source="$(swift_build_bin_path "release" "${TARGET_ARCH}")/${bundle_name}"
 
-  for candidate_dir in \
-    "$(swift_build_bin_path "release" "arm64")" \
-    "$(swift_build_bin_path "release" "x86_64")"
-  do
-    if [[ -d "${candidate_dir}/${bundle_name}" ]]; then
-      bundle_source="${candidate_dir}/${bundle_name}"
-      break
-    fi
-  done
-
-  if [[ -z "$bundle_source" ]]; then
-    echo "❌ Error: AXe resource bundle not found in Swift build outputs"
+  if [[ ! -d "$bundle_source" ]]; then
+    echo "❌ Error: AXe resource bundle not found in Swift build outputs: ${bundle_source}"
     exit 1
   fi
 
   rm -rf "$bundle_dest"
   cp -R "$bundle_source" "$bundle_dest"
   print_success "AXe resource bundle installed to ${bundle_dest}"
+}
+
+# Copies the simulator helper into the payload's `Resources/` beside `axe`, keeping its signature.
+function install_simulator_bridge() {
+  local output_base_dir="$1"
+  local bridge_source="${IDB_BRIDGE_DIR}/${SIMULATOR_BRIDGE_NAME}"
+  local resources_dir="${output_base_dir}/Resources"
+
+  verify_simulator_bridge "$bridge_source"
+  rm -rf "$resources_dir"
+  mkdir -p "$resources_dir"
+  ditto "$bridge_source" "${resources_dir}/${SIMULATOR_BRIDGE_NAME}"
+  verify_simulator_bridge "${resources_dir}/${SIMULATOR_BRIDGE_NAME}"
+  print_success "${SIMULATOR_BRIDGE_NAME} installed to ${resources_dir}"
 }
 
 function fresh_clone_idb_repo() {
@@ -351,7 +359,7 @@ function fresh_clone_idb_repo() {
   printf '%s\n' "$$" > "$IDB_REPLACEMENT_ROOT/.axe-owner-pid"
   local replacement_checkout
   replacement_checkout="${IDB_REPLACEMENT_ROOT}/checkout"
-  print_info "Cloning AXe's IDB fork into $IDB_CHECKOUT_DIR..."
+  print_info "Cloning IDB into $IDB_CHECKOUT_DIR..."
   if ! git clone --no-checkout "$IDB_GIT_URL" "$replacement_checkout" ||
      ! git -C "$replacement_checkout" checkout --detach "$IDB_GIT_REF"; then
     cleanup_current_idb_replacement
@@ -363,7 +371,7 @@ function fresh_clone_idb_repo() {
   fi
   mv "$replacement_checkout" "$IDB_CHECKOUT_DIR"
   cleanup_current_idb_replacement
-  print_success "IDB fork cloned at $IDB_GIT_REF."
+  print_success "IDB cloned at $IDB_GIT_REF."
 }
 
 function clone_idb_repo() {
@@ -395,18 +403,18 @@ function clone_idb_repo() {
         fi
       fi
       touch "$IDB_CHECKOUT_DIR/.git/axe-managed-checkout"
-      print_info "Reusing pinned IDB fork checkout at $IDB_GIT_REF."
+      print_info "Reusing pinned IDB checkout at $IDB_GIT_REF."
       verify_idb_source_state
       return 0
     fi
 
-    print_info "Updating AXe's IDB fork to $IDB_GIT_REF..."
+    print_info "Updating IDB checkout to $IDB_GIT_URL@$IDB_GIT_REF..."
     git -C "$IDB_CHECKOUT_DIR" remote set-url origin "$IDB_GIT_URL"
     if ! (cd "$IDB_CHECKOUT_DIR" && git fetch origin --tags --prune && git checkout -- . && git clean -fd && git checkout --detach "$IDB_GIT_REF"); then
       print_warning "The cached IDB checkout is incomplete; replacing it with a clean clone."
       fresh_clone_idb_repo
     else
-      print_success "IDB fork updated to $IDB_GIT_REF."
+      print_success "IDB checkout updated to $IDB_GIT_REF."
     fi
   fi
   verify_idb_source_state
@@ -430,314 +438,180 @@ function verify_idb_source_state() {
     echo "   Actual:   $actual_remote"
     exit 1
   fi
-  if ! git -C "$IDB_CHECKOUT_DIR" merge-base --is-ancestor "$IDB_UPSTREAM_BASE_REF" "$actual_ref"; then
-    echo "❌ Error: Pinned IDB fork revision is not based on $IDB_UPSTREAM_BASE_REF"
-    exit 1
-  fi
 
+  # Content markers for the upstream API AXe builds on, so a wrong or rewritten pin fails here
+  # rather than as Swift errors later.
   local source_checks=(
-    "FBControlCore/Utility/FBXcodeDirectory.swift|environment[\"DEVELOPER_DIR\"]"
-    "FBSimulatorControl/Commands/FBAXTranslationDispatcher.swift|clientType = 2"
-    "FBSimulatorControl/Commands/FBAXTranslationRequest.swift|@_implementationOnly import AccessibilityPlatformTranslation"
-    "FBSimulatorControl/HID/FBSimulatorHID.swift|public let transportType"
-    "FBSimulatorControl/HID/FBSimulatorHIDEvent.swift|event.event(for: transportType)"
-    "FBSimulatorControl/Utility/FBSimulatorControlFrameworkLoader.m|XCUIDeviceRemoteAutomationSession"
+    "FBSimulatorControl/Management/SimulatorControlBootstrap.swift|public final class SimulatorControlBootstrap"
+    "FBSimulatorControl/Commands/SimulatorHIDCommands.swift|public func connect() async throws -> SimulatorHID"
+    "FBSimulatorControl/Commands/SimulatorDisplayCommands.swift|public enum SimulatorDisplayRotation"
+    "FBSimulatorControl/Commands/SimulatorScreenshotCommands.swift|public func take(configuration: ScreenshotConfiguration)"
+    "FBSimulatorAX/Commands/Simulator+UIAutomation.swift|public func uiAutomation(backend: UIAutomationBackend"
+    "FBControlCore/Utility/BundledResources.swift|public static var hostDirectoryPath"
+    "FBSimulatorServices/SimulatorFrameworkBridge/SimulatorFrameworkBridgeSelection.swift|\"${SIMULATOR_BRIDGE_NAME}\""
   )
   local check source_file source_marker
   for check in "${source_checks[@]}"; do
     source_file="${check%%|*}"
     source_marker="${check#*|}"
     if ! grep -Fq "$source_marker" "${IDB_CHECKOUT_DIR}/${source_file}"; then
-      echo "❌ Error: Pinned IDB fork verification failed"
+      echo "❌ Error: Pinned IDB verification failed"
       echo "   Missing '${source_marker}' in ${source_file}"
-      echo "   Fork revision: ${IDB_GIT_URL}@${IDB_GIT_REF}"
+      echo "   Revision: ${IDB_GIT_URL}@${IDB_GIT_REF}"
       exit 1
     fi
   done
 
   if ! git -C "$IDB_CHECKOUT_DIR" diff --check; then
-    echo "❌ Error: Pinned IDB fork checkout contains uncommitted whitespace errors"
+    echo "❌ Error: Pinned IDB checkout contains uncommitted whitespace errors"
     exit 1
   fi
   if [[ -n "$(git -C "$IDB_CHECKOUT_DIR" status --porcelain)" ]]; then
-    echo "❌ Error: Pinned IDB fork checkout is not clean"
+    echo "❌ Error: Pinned IDB checkout is not clean"
     exit 1
   fi
 
-  print_success "Verified IDB fork ${IDB_GIT_URL}@${actual_ref} from upstream base ${IDB_UPSTREAM_BASE_REF}"
+  print_success "Verified IDB ${IDB_GIT_URL}@${actual_ref}"
 }
 
+# Generates the two upstream projects AXe builds from: FBSimulatorControl.xcodeproj (the
+# `Libraries` scheme) and SimulatorFrameworkBridge.xcodeproj. Upstream's own `build.sh generate`
+# also generates the companion projects, which AXe does not need. The generated projects are
+# ignored by the checkout's .gitignore, so it stays clean.
 function generate_idb_projects() {
   if ! command -v xcodegen >/dev/null 2>&1; then
-    echo "❌ Error: XcodeGen is required to generate the pinned IDB fork projects."
+    echo "❌ Error: XcodeGen is required to generate the pinned IDB projects."
     echo "   Install XcodeGen or make an existing installation available in PATH."
     exit 1
   fi
 
   verify_idb_source_state
-  print_info "Generating pinned IDB fork projects with $(xcodegen --version)..."
-  (cd "$IDB_CHECKOUT_DIR" && ./build.sh generate)
-  if [[ ! -f "${FBSIMCONTROL_PROJECT}/project.pbxproj" ]]; then
-    echo "❌ Error: IDB project generation did not produce ${FBSIMCONTROL_PROJECT}/project.pbxproj"
-    exit 1
-  fi
-  print_success "Generated pinned IDB fork projects before framework compilation"
+  print_info "Generating pinned IDB projects with $(xcodegen --version)..."
+  xcodegen generate --spec "${IDB_CHECKOUT_DIR}/project.yml" --project "${IDB_CHECKOUT_DIR}"
+  xcodegen generate \
+    --spec "${IDB_CHECKOUT_DIR}/SimulatorFrameworkBridge/project.yml" \
+    --project "${IDB_CHECKOUT_DIR}/SimulatorFrameworkBridge"
+  local project
+  for project in "${FBSIMCONTROL_PROJECT}" "${SIMULATOR_BRIDGE_PROJECT}"; do
+    if [[ ! -f "${project}/project.pbxproj" ]]; then
+      echo "❌ Error: IDB project generation did not produce ${project}/project.pbxproj"
+      exit 1
+    fi
+  done
+  print_success "Generated pinned IDB projects"
 }
 
 function write_idb_build_evidence() {
-  local evidence_path="${BUILD_XCFRAMEWORK_DIR}/IDB_BUILD_EVIDENCE.txt"
-  mkdir -p "$BUILD_XCFRAMEWORK_DIR"
+  local evidence_path="${IDB_PRODUCTS_DIR}/IDB_BUILD_EVIDENCE.txt"
+  mkdir -p "$IDB_PRODUCTS_DIR"
   {
     echo "IDB_SHA=${IDB_GIT_REF}"
     echo "IDB_GIT_URL=${IDB_GIT_URL}"
-    echo "IDB_UPSTREAM_BASE_SHA=${IDB_UPSTREAM_BASE_REF}"
+    echo "IDB_CONFIGURATION=${LIBRARY_CONFIGURATION}"
+    echo "IDB_ARCHS=${TARGET_ARCH}"
     echo "DEVELOPER_DIR=${DEVELOPER_DIR:-<not set>}"
     echo "XCODE_VERSION=$(xcodebuild -version | tr '\n' ' ')"
     echo "SWIFT_VERSION=$(swiftc --version 2>&1 | head -1)"
     echo "XCODEGEN_VERSION=$(xcodegen --version)"
-    git -C "$IDB_CHECKOUT_DIR" log --reverse \
-      --format='IDB_DOWNSTREAM_COMMIT=%H %s' \
-      "${IDB_UPSTREAM_BASE_REF}..${IDB_GIT_REF}"
   } > "$evidence_path"
-  print_success "Recorded pinned IDB fork build evidence at ${evidence_path}"
+  print_success "Recorded IDB build evidence at ${evidence_path}"
 }
 
-# Function to build a single framework
-# $1: Scheme name
-# $2: Project file path
-# $3: Base output directory (for .framework and .xcframework)
-function framework_build() {
-  local scheme_name="$1"
-  local project_file="$2"
-  local output_base_dir="$3"
-
-  print_subsection "🔨" "Building framework: ${scheme_name}"
-  print_info "Project: ${project_file}"
-
-  invoke_xcodebuild \
-    -project "${project_file}" \
-    -scheme "${scheme_name}" \
-    -sdk "${FRAMEWORK_SDK}" \
+# Builds every upstream library (the generated `Libraries` scheme) for macOS, then the
+# SimulatorFrameworkBridge-iOS guest for the iOS Simulator.
+function build_idb_libraries() {
+  print_subsection "🔨" "Building IDB scheme: Libraries (${LIBRARY_CONFIGURATION}, ${TARGET_ARCH})"
+  if ! invoke_xcodebuild \
+    -project "${FBSIMCONTROL_PROJECT}" \
+    -scheme Libraries \
+    -sdk macosx \
     -destination "generic/platform=macOS" \
-    -configuration "${FRAMEWORK_CONFIGURATION}" \
-    -derivedDataPath "${DERIVED_DATA_PATH}" \
-    build \
-    SKIP_INSTALL=NO \
-    ONLY_ACTIVE_ARCH=NO \
-    ARCHS="arm64 x86_64" \
-    BUILD_LIBRARY_FOR_DISTRIBUTION=YES \
-    GCC_WARN_ABOUT_MISSING_FIELD_INITIALIZERS=NO \
-    CLANG_WARN_DOCUMENTATION_COMMENTS=NO \
-    GCC_TREAT_WARNINGS_AS_ERRORS=NO \
-    SWIFT_TREAT_WARNINGS_AS_ERRORS=NO \
-    OTHER_LDFLAGS='$(inherited) -Wl,-headerpad_max_install_names'
-  local build_exit_code=$?
-
-  if [ $build_exit_code -eq 0 ]; then
-    print_success "Framework ${scheme_name} built successfully!"
-  else
-    echo "❌ Error: Framework ${scheme_name} build failed with exit code ${build_exit_code}"
-    exit $build_exit_code
+    -configuration "${LIBRARY_CONFIGURATION}" \
+    build; then
+    echo "❌ Error: IDB Libraries build failed"
+    exit 1
   fi
+  print_success "IDB libraries built"
+
+  print_subsection "🔨" "Building IDB helper: ${SIMULATOR_BRIDGE_NAME}"
+  if ! invoke_xcodebuild \
+    -project "${SIMULATOR_BRIDGE_PROJECT}" \
+    -scheme "${SIMULATOR_BRIDGE_NAME}" \
+    -sdk iphonesimulator \
+    -destination "generic/platform=iOS Simulator" \
+    -configuration Release \
+    build; then
+    echo "❌ Error: ${SIMULATOR_BRIDGE_NAME} build failed"
+    exit 1
+  fi
+  print_success "${SIMULATOR_BRIDGE_NAME} built"
 }
 
-# Function to install a single framework to Frameworks/
-# $1: Scheme name (used to find the .framework in derived data)
-# $2: Base output directory
-function install_framework() {
-  local scheme_name="$1"
-  local output_base_dir="$2"
-  local built_framework_path="${DERIVED_DATA_PATH}/Build/Products/${FRAMEWORK_CONFIGURATION}/${scheme_name}.framework"
-  local final_framework_install_dir="${output_base_dir}/Frameworks"
+# Copies what AXe links into build_products/idb:
+#   lib/lib<Name>.a and lib/<Name>.swiftmodule/ side by side (-L and -I of Package.swift)
+#   bridge/SimulatorFrameworkBridge-iOS (copied as built, signature intact)
+#   IDB_BUILD_EVIDENCE.txt
+function install_idb_libraries() {
+  local xcodebuild_root
+  xcodebuild_root="$(absolute_dir "${DERIVED_DATA_PATH}")"
+  local macos_products="${xcodebuild_root}/Products/${LIBRARY_CONFIGURATION}"
+  local simulator_products="${xcodebuild_root}/Products/Release-iphonesimulator"
 
-  print_info "Installing framework ${scheme_name}.framework to ${final_framework_install_dir}..."
-  if [[ ! -d "${built_framework_path}" ]]; then
-    echo "❌ Error: Built framework not found at ${built_framework_path} for installation."
+  print_subsection "📦" "Installing IDB libraries to ${IDB_PRODUCTS_DIR}"
+  rm -rf "${IDB_PRODUCTS_DIR}"
+  mkdir -p "${IDB_LIBRARY_DIR}" "${IDB_BRIDGE_DIR}"
+
+  local library archive module
+  for library in "${IDB_LIBRARIES[@]}"; do
+    archive="${macos_products}/lib${library}.a"
+    if [[ ! -f "$archive" ]]; then
+      echo "❌ Error: Built archive not found: ${archive}"
+      exit 1
+    fi
+    cp "$archive" "${IDB_LIBRARY_DIR}/"
+    module="${macos_products}/${library}.swiftmodule"
+    if [[ -d "$module" ]]; then
+      cp -R "$module" "${IDB_LIBRARY_DIR}/"
+    fi
+  done
+
+  local bridge="${simulator_products}/${SIMULATOR_BRIDGE_NAME}"
+  if [[ ! -f "$bridge" ]]; then
+    echo "❌ Error: Built ${SIMULATOR_BRIDGE_NAME} not found: ${bridge}"
+    exit 1
+  fi
+  ditto "$bridge" "${IDB_BRIDGE_DIR}/${SIMULATOR_BRIDGE_NAME}"
+
+  write_idb_build_evidence
+  verify_idb_libraries
+}
+
+function verify_idb_libraries() {
+  print_subsection "🧪" "Validating IDB library inputs"
+
+  local evidence_path="${IDB_PRODUCTS_DIR}/IDB_BUILD_EVIDENCE.txt"
+  if ! grep -Fxq "IDB_SHA=${IDB_GIT_REF}" "$evidence_path" 2>/dev/null; then
+    echo "❌ Error: ${evidence_path} missing or not built from ${IDB_GIT_REF}"
     exit 1
   fi
 
-  mkdir -p "${final_framework_install_dir}"
-  print_info "Copying ${built_framework_path} to ${final_framework_install_dir}/"
-  cp -R "${built_framework_path}" "${final_framework_install_dir}/"
-  print_success "Framework ${scheme_name}.framework installed to ${final_framework_install_dir}/"
-}
-
-# Function to create a single XCFramework
-# $1: Scheme name
-# $2: Base output directory (where XCFrameworks/ subdirectory will be created)
-function create_xcframework() {
-  local scheme_name="$1"
-  local output_base_dir="$2"
-  local signed_framework_path="${output_base_dir}/Frameworks/${scheme_name}.framework"
-  local final_xcframework_output_dir="${output_base_dir}/XCFrameworks"
-  local xcframework_path="${final_xcframework_output_dir}/${scheme_name}.xcframework"
-
-  print_subsection "📦" "Creating XCFramework for ${scheme_name}"
-  if [[ ! -d "${signed_framework_path}" ]]; then
-    echo "❌ Error: Signed framework not found at ${signed_framework_path} for XCFramework creation."
-    exit 1
-  fi
-
-  mkdir -p "${final_xcframework_output_dir}"
-  rm -rf "${xcframework_path}"
-
-  print_info "Packaging ${signed_framework_path} into ${xcframework_path}"
-  invoke_xcodebuild \
-    -create-xcframework \
-    -framework "${signed_framework_path}" \
-    -output "${xcframework_path}"
-  local xcframework_exit_code=$?
-
-  if [ $xcframework_exit_code -eq 0 ]; then
-    local source_swiftmodule_dir="${signed_framework_path}/Modules/${scheme_name}.swiftmodule"
-    if [[ -d "${source_swiftmodule_dir}" ]]; then
-      local library_identifier
-      library_identifier=$(/usr/libexec/PlistBuddy \
-        -c "Print :AvailableLibraries:0:LibraryIdentifier" \
-        "${xcframework_path}/Info.plist")
-      local packaged_swiftmodule_dir="${xcframework_path}/${library_identifier}/${scheme_name}.framework/Modules/${scheme_name}.swiftmodule"
-      mkdir -p "${packaged_swiftmodule_dir}"
-
-      local compiled_swiftmodule
-      for compiled_swiftmodule in "${source_swiftmodule_dir}"/*.swiftmodule; do
-        [[ -f "${compiled_swiftmodule}" ]] || continue
-        cp "${compiled_swiftmodule}" "${packaged_swiftmodule_dir}/"
-      done
-      print_info "Preserved compiled Swift modules for ${scheme_name}.xcframework"
-    fi
-    print_success "XCFramework ${scheme_name}.xcframework created at ${xcframework_path}"
-  else
-    echo "❌ Error: XCFramework creation for ${scheme_name} failed with exit code ${xcframework_exit_code}"
-    exit $xcframework_exit_code
-  fi
-}
-
-# Function to strip a framework of nested frameworks
-# $1: Base output directory
-# $2: Framework path
-function strip_framework() {
-  local output_base_dir="$1"
-  local framework_path="${output_base_dir}/Frameworks/${2}"
-
-  if [ -d "$framework_path" ]; then
-    print_info "Stripping Framework $framework_path"
-    rm -r "$framework_path"
-  fi
-}
-
-# Function to resign a framework with Developer ID
-# $1: Base output directory
-# $2: Framework name (e.g., "FBSimulatorControl.framework")
-function resign_framework() {
-  local output_base_dir="$1"
-  local framework_name="$2"
-  local framework_path="${output_base_dir}/Frameworks/${framework_name}"
-
-  if [ -d "$framework_path" ]; then
-    print_info "Resigning framework: ${framework_name}"
-
-    # First, sign all dynamic libraries and binaries inside the framework
-    print_info "Signing embedded binaries in ${framework_name}..."
-
-    # Find and sign all .dylib files recursively
-    find "$framework_path" -name "*.dylib" -type f | while read -r dylib_path; do
-      print_info "  Signing dylib: $(basename "$dylib_path")"
-      codesign_with_retry --force \
-        --sign "${CODESIGN_IDENTITY}" \
-        --options runtime \
-        --timestamp \
-        --verbose \
-        "$dylib_path"
-
-      if [ $? -ne 0 ]; then
-        echo "❌ Error: Failed to sign dylib: $dylib_path"
-        exit 1
-      fi
-    done
-
-    # Remove any existing signature from the main framework binary first
-    print_info "Removing existing signature from ${framework_name}..."
-    codesign --remove-signature "$framework_path" 2>/dev/null || true
-
-    # Sign the main framework bundle with specific notarization-compatible options
-    print_info "Signing main framework bundle: ${framework_name}"
-    codesign_with_retry --force \
-      --sign "${CODESIGN_IDENTITY}" \
-      --options runtime \
-      --entitlements entitlements.plist \
-      --timestamp \
-      --verbose \
-      "$framework_path"
-
-    if [ $? -eq 0 ]; then
-      print_success "Framework ${framework_name} resigned successfully"
-
-      # Verify the signature with strictest verification
-      print_info "Performing strict verification for ${framework_name}..."
-      codesign -vvv --strict "$framework_path"
-
-      if [ $? -eq 0 ]; then
-        print_success "Signature verification passed for ${framework_name}"
-
-        # Display signature details
-        print_info "Signature details for ${framework_name}:"
-        codesign -dv "$framework_path" 2>&1 | grep -E "(Identifier|TeamIdentifier|Authority|Timestamp)" || true
-      else
-        echo "❌ Error: Signature verification failed for ${framework_name}"
-        exit 1
-      fi
-    else
-      echo "❌ Error: Failed to resign framework ${framework_name}"
+  local library archive
+  for library in "${IDB_LIBRARIES[@]}"; do
+    archive="${IDB_LIBRARY_DIR}/lib${library}.a"
+    if [[ ! -f "$archive" ]]; then
+      echo "❌ Error: Expected IDB archive missing: ${archive}"
       exit 1
     fi
-  else
-    print_warning "Framework not found: $framework_path"
-  fi
-}
-
-# Function to resign an XCFramework with Developer ID
-# $1: Base output directory
-# $2: XCFramework name (e.g., "FBSimulatorControl.xcframework")
-function resign_xcframework() {
-  local output_base_dir="$1"
-  local xcframework_name="$2"
-  local xcframework_path="${output_base_dir}/XCFrameworks/${xcframework_name}"
-
-  if [ -d "$xcframework_path" ]; then
-    print_info "Resigning XCFramework: ${xcframework_name}"
-
-    # Sign XCFramework with Developer ID and runtime hardening
-    codesign_with_retry --force \
-      --sign "${CODESIGN_IDENTITY}" \
-      --options runtime \
-      --deep \
-      --timestamp \
-      "$xcframework_path"
-
-    if [ $? -eq 0 ]; then
-      print_success "XCFramework ${xcframework_name} resigned successfully"
-
-      # Verify the signature with strictest verification and deep checking
-      print_info "Performing strict verification for XCFramework ${xcframework_name}..."
-      codesign -vvv --deep "$xcframework_path"
-
-      if [ $? -eq 0 ]; then
-        print_success "XCFramework signature verification passed for ${xcframework_name}"
-
-        # Display signature details
-        print_info "XCFramework signature details for ${xcframework_name}:"
-        codesign -dv --deep "$xcframework_path" 2>&1 | grep -E "(Identifier|TeamIdentifier|Authority)" || true
-      else
-        echo "❌ Error: XCFramework signature verification failed for ${xcframework_name}"
-        exit 1
-      fi
-    else
-      echo "❌ Error: Failed to resign XCFramework ${xcframework_name}"
+    verify_macho_archs_exactly "$archive" "${TARGET_ARCH}"
+    if [[ "$library" != "FBControlCoreObjC" &&
+          ! -f "${IDB_LIBRARY_DIR}/${library}.swiftmodule/${TARGET_ARCH}-apple-macos.swiftmodule" ]]; then
+      echo "❌ Error: Swift module missing for ${library} in ${IDB_LIBRARY_DIR}"
       exit 1
     fi
-  else
-    print_warning "XCFramework not found: $xcframework_path"
-  fi
+  done
+
+  verify_simulator_bridge "${IDB_BRIDGE_DIR}/${SIMULATOR_BRIDGE_NAME}"
+  print_success "IDB libraries are ${TARGET_ARCH} static archives with Swift modules, plus ${SIMULATOR_BRIDGE_NAME}"
 }
 
 function remove_xcode_rpaths() {
@@ -755,37 +629,13 @@ function remove_xcode_rpaths() {
   fi
 }
 
-function sanitize_framework_rpaths() {
-  local frameworks_dir="$1"
-  if [[ ! -d "$frameworks_dir" ]]; then
-    print_warning "Frameworks directory not found: $frameworks_dir"
-    return
-  fi
-
-  print_info "Removing Xcode toolchain rpaths from framework binaries..."
-  local found=false
-  while IFS= read -r -d '' file; do
-    if file "$file" | grep -q "Mach-O"; then
-      found=true
-      remove_xcode_rpaths "$file"
-    fi
-  done < <(find "$frameworks_dir" -type f -print0)
-
-  if [[ "$found" == "false" ]]; then
-    print_warning "No Mach-O files found under ${frameworks_dir}"
-  fi
-}
-
 # Function to build the AXe executable using Swift Package Manager
 # $1: Base output directory
 function build_axe_executable() {
   local output_base_dir="$1"
   local build_config="release"
   local executable_dest="${output_base_dir}/axe"
-  local arm64_executable="${output_base_dir}/axe-arm64"
-  local x64_executable="${output_base_dir}/axe-x86_64"
-  local arm64_bin_path
-  local x64_bin_path
+  local bin_path
 
   print_subsection "⚡" "Building AXe executable"
   print_info "Using Swift Package Manager to build AXe..."
@@ -794,136 +644,47 @@ function build_axe_executable() {
   print_info "Cleaning previous build products..."
   swift package clean
 
-  print_info "Building arm64 executable..."
-  swift build --configuration "${build_config}" --arch arm64
-  arm64_bin_path="$(swift_build_bin_path "$build_config" "arm64")/axe"
-  if [[ ! -f "${arm64_bin_path}" ]]; then
-    echo "❌ Error: arm64 AXe executable not found at ${arm64_bin_path}"
+  print_info "Building ${TARGET_ARCH} executable..."
+  swift build --configuration "${build_config}" --arch "${TARGET_ARCH}"
+  bin_path="$(swift_build_bin_path "$build_config" "${TARGET_ARCH}")/axe"
+  if [[ ! -f "${bin_path}" ]]; then
+    echo "❌ Error: AXe executable not found at ${bin_path}"
     exit 1
   fi
-  cp "${arm64_bin_path}" "${arm64_executable}"
-
-  print_info "Building x86_64 executable..."
-  swift build --configuration "${build_config}" --arch x86_64
-  x64_bin_path="$(swift_build_bin_path "$build_config" "x86_64")/axe"
-  if [[ ! -f "${x64_bin_path}" ]]; then
-    echo "❌ Error: x86_64 AXe executable not found at ${x64_bin_path}"
-    exit 1
-  fi
-  cp "${x64_bin_path}" "${x64_executable}"
-
-  print_info "Creating universal executable with lipo..."
-  lipo -create -output "${executable_dest}" "${arm64_executable}" "${x64_executable}"
-  rm -f "${arm64_executable}" "${x64_executable}"
+  cp "${bin_path}" "${executable_dest}"
 
   copy_resource_bundle "${output_base_dir}"
+  install_simulator_bridge "${output_base_dir}"
 
-  verify_macho_has_arch "${executable_dest}" "arm64"
-  verify_macho_has_arch "${executable_dest}" "x86_64"
-  print_success "AXe executable installed to ${executable_dest}"
-
-  # Configure rpath for organized framework loading
-  print_info "Configuring executable rpath for organized framework loading..."
-
-  # Remove any existing rpaths first
-  install_name_tool -delete_rpath "@executable_path/Frameworks" "${executable_dest}" 2>/dev/null || true
-  install_name_tool -delete_rpath "@loader_path/Frameworks" "${executable_dest}" 2>/dev/null || true
-
-  # Add primary rpath: look for frameworks in Frameworks/ subdirectory relative to executable
-  install_name_tool -add_rpath "@executable_path/Frameworks" "${executable_dest}"
-  print_success "Added rpath: @executable_path/Frameworks"
-
-  # Add fallback rpath: look for frameworks in Frameworks/ relative to current library
-  install_name_tool -add_rpath "@loader_path/Frameworks" "${executable_dest}"
-  print_success "Added rpath: @loader_path/Frameworks"
-
-  # Strip any Xcode toolchain rpaths that can trigger Homebrew relocation
+  # IDB is linked statically: nothing is embedded, so no Frameworks/ rpath is needed. Strip any
+  # Xcode toolchain rpaths that can trigger Homebrew relocation.
   remove_xcode_rpaths "${executable_dest}"
 
-  # Verify rpath configuration
-  print_info "Verifying rpath configuration..."
-  local rpath_output=$(otool -l "${executable_dest}" | grep -A2 LC_RPATH | grep path | awk '{print $2}')
-  if [[ -n "$rpath_output" ]]; then
-    print_success "Executable rpath configuration verified:"
-    echo "$rpath_output" | while read -r path; do
-      print_info "  → ${path}"
-    done
-  else
-    print_warning "No rpath entries found in executable"
-  fi
-
-  print_success "Executable rpath configured for organized framework deployment"
-}
-
-function verify_xcframework_inputs() {
-  local output_base_dir="$1"
-  local xcframeworks_dir="${output_base_dir}/XCFrameworks"
-  local expected_frameworks=("FBControlCore" "XCTestBootstrap" "FBSimulatorControl" "FBDeviceControl")
-
-  print_subsection "🧪" "Validating XCFramework inputs"
-
-  if [[ ! -d "${xcframeworks_dir}" ]]; then
-    echo "❌ Error: XCFrameworks directory not found under ${output_base_dir}"
-    exit 1
-  fi
-
-  for framework_name in "${expected_frameworks[@]}"; do
-    local xcframework_path="${xcframeworks_dir}/${framework_name}.xcframework"
-    if [[ ! -d "${xcframework_path}" ]]; then
-      echo "❌ Error: Expected XCFramework missing from ${xcframeworks_dir}: ${framework_name}.xcframework"
-      exit 1
-    fi
-    local framework_binary
-    framework_binary="$(find "${xcframework_path}" -type f -name "${framework_name}" -path "*/macos-*/*.framework/*" | head -1)"
-    if [[ -z "${framework_binary}" ]]; then
-      echo "❌ Error: Could not locate framework binary inside ${xcframework_path}"
-      exit 1
-    fi
-    verify_macho_has_arch "${framework_binary}" "arm64"
-    verify_macho_has_arch "${framework_binary}" "x86_64"
-    if [[ "${framework_name}" == "FBSimulatorControl" ]]; then
-      verify_fbsimulatorcontrol_fork_features "${framework_binary}"
-    fi
-  done
-
-  print_success "XCFramework inputs include arm64 and x86_64 slices"
+  verify_macho_archs_exactly "${executable_dest}" "${TARGET_ARCH}"
+  print_success "AXe executable installed to ${executable_dest}"
 }
 
 function verify_release_architectures() {
   local output_base_dir="$1"
-  local frameworks_dir="${output_base_dir}/Frameworks"
   local executable_path="${output_base_dir}/axe"
-  local expected_frameworks=("FBControlCore" "XCTestBootstrap" "FBSimulatorControl" "FBDeviceControl")
 
   print_subsection "🧪" "Validating release artifact architectures"
-  verify_macho_has_arch "${executable_path}" "arm64"
-  verify_macho_has_arch "${executable_path}" "x86_64"
+  verify_macho_archs_exactly "${executable_path}" "${TARGET_ARCH}"
 
-  if [[ ! -d "${frameworks_dir}" ]]; then
-    echo "❌ Error: Frameworks directory not found under ${output_base_dir}"
+  # Self-contained: IDB is linked statically, so axe must not load anything through @rpath.
+  if otool -L "${executable_path}" | grep -q "@rpath/"; then
+    echo "❌ Error: ${executable_path} links libraries through @rpath; IDB must be linked statically"
+    otool -L "${executable_path}" | grep "@rpath/"
     exit 1
   fi
 
-  for framework_name in "${expected_frameworks[@]}"; do
-    local framework_path="${frameworks_dir}/${framework_name}.framework"
-    if [[ ! -d "${framework_path}" ]]; then
-      echo "❌ Error: Expected framework missing from ${frameworks_dir}: ${framework_name}.framework"
-      exit 1
-    fi
-    local framework_binary
-    framework_binary="$(resolve_framework_binary "${framework_path}" "${framework_name}" || true)"
-    if [[ -z "${framework_binary}" ]]; then
-      echo "❌ Error: Could not locate framework binary in ${framework_path}"
-      exit 1
-    fi
-    verify_macho_has_arch "${framework_binary}" "arm64"
-    verify_macho_has_arch "${framework_binary}" "x86_64"
-    if [[ "${framework_name}" == "FBSimulatorControl" ]]; then
-      verify_fbsimulatorcontrol_fork_features "${framework_binary}"
-    fi
-  done
+  if [[ ! -d "${output_base_dir}/AXe_AXe.bundle" ]]; then
+    echo "❌ Error: AXe resource bundle missing from ${output_base_dir}"
+    exit 1
+  fi
+  verify_simulator_bridge "${output_base_dir}/Resources/${SIMULATOR_BRIDGE_NAME}"
 
-  print_success "Release artifacts include arm64 and x86_64 slices"
+  print_success "Release artifacts are ${TARGET_ARCH}-only, self-contained, and carry ${SIMULATOR_BRIDGE_NAME}"
 }
 
 # Function to sign the AXe executable with Developer ID
@@ -986,9 +747,21 @@ function package_for_notarization() {
 
   print_info "Copying staged release payload to package..." >&2
   copy_release_payload "${output_base_dir}" "${package_dir}"
+  # Only host code is submitted. The simulator helper runs inside the simulator, is signed for
+  # it, and must keep that signature; the final package takes it from the build output instead.
+  #
+  # TODO(idb-upstream) RELEASE-BLOCKING, UNVERIFIED: the shipped archive therefore contains an
+  # ad-hoc-signed, NOT notarized Mach-O (Resources/SimulatorFrameworkBridge-iOS). Nobody has yet
+  # checked that a browser-downloaded (quarantined) release still runs it: CoreSimulator spawns it
+  # for describe-ui and every other accessibility path, and Gatekeeper may block it. Homebrew
+  # downloads with curl (no quarantine), so it would not catch this. Before the first release on
+  # upstream idb: download the GitHub release archive with a browser, unzip it, and run
+  # `axe describe-ui --udid <booted simulator>`. If it is blocked, find a signing/notarization route
+  # that keeps the helper's simulator entitlements, or document removing the quarantine attribute.
+  print_warning "Release payload: ${SIMULATOR_BRIDGE_NAME} is excluded from notarization (ad-hoc signed); quarantined-download behaviour is UNVERIFIED and release-blocking (see TODO in scripts/build.sh)." >&2
+  rm -r "${package_dir:?}/Resources"
 
-  # Create zip package preserving framework symlinks but excluding AppleDouble
-  # metadata, which breaks framework bundle seals when extracted
+  # Create zip package excluding AppleDouble metadata
   print_info "Creating zip package: ${package_zip}" >&2
   ditto -c -k --norsrc --noextattr --noqtn --keepParent "${package_dir}" "${package_zip}" >&2
 
@@ -1055,7 +828,6 @@ function notarize_package() {
     rm -rf "${temp_extract_dir}"
     mkdir -p "${temp_extract_dir}"
 
-    # Extract the notarized package while preserving framework structure
     ditto -x -k "${package_zip}" "${temp_extract_dir}"
 
     local extracted_package_dir
@@ -1064,15 +836,6 @@ function notarize_package() {
     if [ -n "${extracted_package_dir}" ] && [ -f "${extracted_package_dir}/axe" ]; then
       cp "${extracted_package_dir}/axe" "${BUILD_OUTPUT_DIR}/axe"
       print_success "Original executable replaced with notarized version"
-
-      rm -rf "${BUILD_OUTPUT_DIR}/Frameworks"
-      if [ -d "${extracted_package_dir}/Frameworks" ]; then
-        cp -R "${extracted_package_dir}/Frameworks" "${BUILD_OUTPUT_DIR}/"
-        print_success "Original Frameworks directory replaced with notarized version"
-      else
-        echo "❌ Error: Notarized package missing Frameworks directory"
-        exit 1
-      fi
 
       rm -rf "${BUILD_OUTPUT_DIR}/AXe_AXe.bundle"
       if [ -d "${extracted_package_dir}/AXe_AXe.bundle" ]; then
@@ -1110,11 +873,12 @@ function notarize_package() {
       # Create final package directory
       mkdir -p "${final_package_dir}"
 
-      # Copy notarized executable, resource bundle, and frameworks to final package
+      # Notarized executable and resource bundle, plus Resources/ (the simulator helper) from
+      # the build output, signature untouched.
       copy_release_payload "${BUILD_OUTPUT_DIR}" "${final_package_dir}"
       print_info "Included staged AXe payload in final package"
 
-      # Create final zip package while preserving framework symlinks and metadata
+      # Create final zip package
       print_info "Creating final package: ${final_package_zip}"
       ditto -c -k --keepParent "${final_package_dir}" "${final_package_zip}"
 
@@ -1124,13 +888,13 @@ function notarize_package() {
       if [ -f "${final_package_zip}" ]; then
         print_success "Final deployment package created: ${final_package_zip}"
 
-        # Clean up build artifacts (axe executable and Frameworks, keep XCFrameworks)
+        # Clean up build artifacts (axe executable and payload, keep the IDB libraries)
         print_info "Cleaning up build artifacts..."
         rm -f "${BUILD_OUTPUT_DIR}/axe"
         rm -rf "${BUILD_OUTPUT_DIR}/AXe_AXe.bundle"
-        rm -rf "${BUILD_OUTPUT_DIR}/Frameworks"
-        print_success "Cleaned up axe executable, resource bundle, and Frameworks directory"
-        print_info "Preserved XCFrameworks directory for Swift package builds"
+        rm -rf "${BUILD_OUTPUT_DIR}/Resources"
+        print_success "Cleaned up axe executable, resource bundle, and Resources directory"
+        print_info "Preserved ${IDB_PRODUCTS_DIR} for Swift package builds"
 
         # Output the final package path
         echo ""
@@ -1192,37 +956,34 @@ Commands:
     Print this usage information.
 
   setup
-    Clone the IDB repository and set up directories.
+    Clone the pinned upstream IDB revision into the checkout directory and verify it.
 
   clean
     Clean previous build products and derived data.
 
-  frameworks
-    Generate the pinned fork project, then build all IDB frameworks (FBControlCore, XCTestBootstrap, FBSimulatorControl, FBDeviceControl).
-
   generate
-    Verify the pinned AXe IDB fork revision, then regenerate projects using XcodeGen.
+    Verify the pinned IDB revision, then generate its FBSimulatorControl and
+    SimulatorFrameworkBridge projects with XcodeGen.
 
-  install
-    Install built frameworks to the Frameworks directory.
+  libraries
+    Generate the projects, build the IDB 'Libraries' scheme (Release, arm64) and the
+    ${SIMULATOR_BRIDGE_NAME} helper, and install the static archives, Swift modules and
+    helper into ${IDB_PRODUCTS_DIR} (lib/, bridge/).
 
-  strip
-    Strip nested frameworks from the built frameworks.
-
-  sign-frameworks
-    Code sign all frameworks with Developer ID.
-
-  xcframeworks
-    Create XCFrameworks from the built frameworks.
-
-  sign-xcframeworks
-    Code sign all XCFrameworks with Developer ID.
+  verify-libraries
+    Verify ${IDB_PRODUCTS_DIR} holds arm64 archives and Swift modules built from the pinned
+    revision, and a correctly signed ${SIMULATOR_BRIDGE_NAME}.
 
   executable
-    Build the AXe executable using Swift Package Manager.
+    Build the arm64 AXe executable with Swift Package Manager and stage the release payload
+    (axe, AXe_AXe.bundle, Resources/${SIMULATOR_BRIDGE_NAME}) in the build output directory.
 
   sign-executable
-    Code sign the AXe executable with Developer ID.
+    Code sign the AXe executable with Developer ID (the simulator helper is never re-signed).
+
+  verify-arches
+    Verify the executable is arm64-only and self-contained, and the payload carries the
+    simulator helper with its signature intact.
 
   package
     Create a notarization package (zip file).
@@ -1230,11 +991,8 @@ Commands:
   notarize
     Submit package for Apple notarization and replace original executable.
 
-  verify-xcframeworks
-    Verify XCFramework inputs include arm64 and x86_64 slices.
-
-  verify-arches
-    Verify executable and frameworks include arm64 and x86_64 slices.
+  dev
+    Run setup, clean, and libraries.
 
   build (default)
     Run all steps from setup through notarization.
@@ -1243,9 +1001,10 @@ Environment Variables (set inline, exported, or via a git-ignored .env file):
   AXE_ENV_FILE           Path to the .env file to load (default: <repo-root>/.env)
   AXE_CODESIGN_IDENTITY  Code-signing identity (required for signing; no default)
   IDB_CHECKOUT_DIR       Directory for IDB repository (default: ./idb_checkout)
-  IDB_GIT_URL            AXe IDB fork URL (default: https://github.com/cameroncooke/idb.git)
-  IDB_GIT_REF            Exact fork revision (default: ${DEFAULT_IDB_GIT_REF})
-  IDB_UPSTREAM_BASE_REF  Verified upstream base (default: e682506725e9efefb9c43b8b917c0b12eb2a5939)
+  IDB_GIT_URL            IDB repository URL (default: ${DEFAULT_IDB_GIT_URL}); development only
+  IDB_GIT_REF            Exact IDB revision (default: ${DEFAULT_IDB_GIT_REF}, tag v1.7.7);
+                         development only. Both overrides are refused by build, sign-executable,
+                         package and notarize, and by every command on CI.
   BUILD_OUTPUT_DIR       Directory for build outputs (default: ./build_products)
   DERIVED_DATA_PATH      Directory for derived data (default: ./build_derived_data)
   TEMP_DIR               Temporary directory for final packages (default: system temp)
@@ -1259,8 +1018,8 @@ Environment Variables (set inline, exported, or via a git-ignored .env file):
 Examples:
   ./build.sh                    # Build everything (default)
   ./build.sh help               # Show this help
-  ./build.sh frameworks         # Only build frameworks
-  ./build.sh sign-frameworks    # Only sign frameworks
+  ./build.sh dev                # Clone, clean, and build the IDB libraries
+  ./build.sh libraries          # Only build the IDB libraries
   ./build.sh notarize           # Only run notarization step
 EOF
 }
@@ -1277,72 +1036,25 @@ function cmd_clean() {
   rm -rf "${BUILD_OUTPUT_DIR}"
   rm -rf "${DERIVED_DATA_PATH}"
   mkdir -p "${BUILD_OUTPUT_DIR}"
-  mkdir -p "${BUILD_XCFRAMEWORK_DIR}"
   mkdir -p "${DERIVED_DATA_PATH}"
   print_success "Build directories cleaned and recreated"
 }
 
-function cmd_frameworks() {
-  print_section "🔧" "Building Frameworks"
-  generate_idb_projects
-  framework_build "FBControlCore" "${FBSIMCONTROL_PROJECT}" "${BUILD_OUTPUT_DIR}"
-  framework_build "XCTestBootstrap" "${FBSIMCONTROL_PROJECT}" "${BUILD_OUTPUT_DIR}"
-  framework_build "FBSimulatorControl" "${FBSIMCONTROL_PROJECT}" "${BUILD_OUTPUT_DIR}"
-  framework_build "FBDeviceControl" "${FBSIMCONTROL_PROJECT}" "${BUILD_OUTPUT_DIR}"
-}
-
-function cmd_install() {
-  print_section "📦" "Installing Frameworks"
-  install_framework "FBControlCore" "${BUILD_OUTPUT_DIR}"
-  install_framework "XCTestBootstrap" "${BUILD_OUTPUT_DIR}"
-  install_framework "FBSimulatorControl" "${BUILD_OUTPUT_DIR}"
-  install_framework "FBDeviceControl" "${BUILD_OUTPUT_DIR}"
-}
-
-function cmd_strip() {
-  print_section "✂️" "Stripping Nested Frameworks"
-  strip_framework "${BUILD_OUTPUT_DIR}" "FBSimulatorControl.framework/Versions/Current/Frameworks/XCTestBootstrap.framework"
-  strip_framework "${BUILD_OUTPUT_DIR}" "FBSimulatorControl.framework/Versions/Current/Frameworks/FBControlCore.framework"
-  strip_framework "${BUILD_OUTPUT_DIR}" "FBDeviceControl.framework/Versions/Current/Frameworks/XCTestBootstrap.framework"
-  strip_framework "${BUILD_OUTPUT_DIR}" "FBDeviceControl.framework/Versions/Current/Frameworks/FBControlCore.framework"
-  strip_framework "${BUILD_OUTPUT_DIR}" "XCTestBootstrap.framework/Versions/Current/Frameworks/FBControlCore.framework"
-}
-
-function cmd_sign_frameworks() {
-  print_section "🔒" "Resigning Frameworks"
-  require_config "AXE_CODESIGN_IDENTITY" "${CODESIGN_IDENTITY}"
-  print_info "Resigning frameworks..."
-  sanitize_framework_rpaths "${BUILD_OUTPUT_DIR}/Frameworks"
-  resign_framework "${BUILD_OUTPUT_DIR}" "FBSimulatorControl.framework"
-  resign_framework "${BUILD_OUTPUT_DIR}" "FBDeviceControl.framework"
-  resign_framework "${BUILD_OUTPUT_DIR}" "XCTestBootstrap.framework"
-  resign_framework "${BUILD_OUTPUT_DIR}" "FBControlCore.framework"
-  print_success "Frameworks resigned successfully"
-}
-
-function cmd_xcframeworks() {
-  print_section "📦" "Creating XCFrameworks"
-  create_xcframework "FBControlCore" "${BUILD_OUTPUT_DIR}"
-  create_xcframework "XCTestBootstrap" "${BUILD_OUTPUT_DIR}"
-  create_xcframework "FBSimulatorControl" "${BUILD_OUTPUT_DIR}"
-  create_xcframework "FBDeviceControl" "${BUILD_OUTPUT_DIR}"
-  write_idb_build_evidence
-}
-
 function cmd_generate() {
-  print_section "🧬" "Generating Candidate IDB Projects"
+  print_section "🧬" "Generating IDB Projects"
   generate_idb_projects
 }
 
-function cmd_sign_xcframeworks() {
-  print_section "🔒" "Resigning XCFrameworks"
-  require_config "AXE_CODESIGN_IDENTITY" "${CODESIGN_IDENTITY}"
-  print_info "Resigning XCFrameworks with Developer ID..."
-  resign_xcframework "${BUILD_OUTPUT_DIR}" "FBControlCore.xcframework"
-  resign_xcframework "${BUILD_OUTPUT_DIR}" "XCTestBootstrap.xcframework"
-  resign_xcframework "${BUILD_OUTPUT_DIR}" "FBSimulatorControl.xcframework"
-  resign_xcframework "${BUILD_OUTPUT_DIR}" "FBDeviceControl.xcframework"
-  print_success "XCFrameworks resigned successfully"
+function cmd_libraries() {
+  print_section "🔧" "Building IDB Libraries"
+  generate_idb_projects
+  build_idb_libraries
+  install_idb_libraries
+}
+
+function cmd_verify_libraries() {
+  print_section "🧪" "Verifying IDB Library Inputs"
+  verify_idb_libraries
 }
 
 function cmd_executable() {
@@ -1376,23 +1088,18 @@ function cmd_notarize() {
   notarize_package "${PACKAGE_ZIP}"
 }
 
-function cmd_verify_xcframeworks() {
-  print_section "🧪" "Verifying XCFramework Inputs"
-  verify_xcframework_inputs "${BUILD_OUTPUT_DIR}"
-}
-
 function cmd_verify_arches() {
   print_section "🧪" "Verifying Architecture Slices"
   verify_release_architectures "${BUILD_OUTPUT_DIR}"
 }
 
 function cmd_build() {
-  print_section "🚀" "IDB Framework Builder for AXe Project"
+  print_section "🚀" "IDB Library Builder for AXe Project"
 
   print_info "IDB Checkout Directory: ${IDB_CHECKOUT_DIR}"
   print_info "Build Output Directory: ${BUILD_OUTPUT_DIR}"
   print_info "Derived Data Path: ${DERIVED_DATA_PATH}"
-  print_info "XCFramework Output Directory: ${BUILD_XCFRAMEWORK_DIR}"
+  print_info "IDB Products Directory: ${IDB_PRODUCTS_DIR}"
   print_info "Temporary Directory: ${TEMP_DIR}"
   print_info "IDB Project: ${FBSIMCONTROL_PROJECT}"
   print_info "Notarization API Key: ${NOTARIZATION_API_KEY_PATH}"
@@ -1401,32 +1108,56 @@ function cmd_build() {
   # Run all steps
   cmd_setup
   cmd_clean
-  cmd_frameworks
-  cmd_install
-  cmd_strip
-  cmd_sign_frameworks
-  cmd_xcframeworks
-  cmd_sign_xcframeworks
+  cmd_libraries
   cmd_executable
   cmd_sign_executable
+  cmd_verify_arches
   cmd_package
   cmd_notarize
 
   print_section "🎉" "Build Complete!"
-  print_success "All framework builds, XCFramework creation, AXe executable, and notarization completed."
-  print_info "📦 XCFrameworks are located in ${BUILD_XCFRAMEWORK_DIR}"
+  print_success "IDB libraries, AXe executable, and notarization completed."
+  print_info "📦 IDB libraries are located in ${IDB_PRODUCTS_DIR}"
   print_info "📁 Final deployment package is located at ${PACKAGE_ZIP}"
-  print_info "🧹 Build artifacts (axe executable and Frameworks) have been cleaned up"
+  print_info "🧹 Build artifacts (axe executable and payload) have been cleaned up"
   echo ""
   echo "🏁 Build process finished successfully!"
   echo ""
+}
+
+# A release must be built from the pinned upstream revision: a stray IDB_GIT_REF or IDB_GIT_URL
+# (environment or .env) is refused for the release commands and on CI, and kept for local
+# development commands (setup, libraries, dev, ...).
+function refuse_idb_override_in_release_mode() {
+  local command="$1"
+  local reason=""
+  case "$command" in
+    build|sign-executable|package|notarize)
+      reason="the '${command}' release command";;
+  esac
+  if [[ -z "$reason" && ( "${CI:-}" == "true" || "${GITHUB_ACTIONS:-}" == "true" ) ]]; then
+    reason="CI (CI or GITHUB_ACTIONS is true)"
+  fi
+  [[ -n "$reason" ]] || return 0
+  if [[ "$IDB_GIT_REF" != "$DEFAULT_IDB_GIT_REF" || "$IDB_GIT_URL" != "$DEFAULT_IDB_GIT_URL" ]]; then
+    echo "❌ Error: IDB_GIT_REF/IDB_GIT_URL overrides are not allowed for ${reason}." >&2
+    echo "   Pinned: ${DEFAULT_IDB_GIT_URL}@${DEFAULT_IDB_GIT_REF}" >&2
+    echo "   Got:    ${IDB_GIT_URL}@${IDB_GIT_REF}" >&2
+    echo "   Unset them (check ${ENV_FILE}), or change the pin in scripts/build.sh." >&2
+    exit 1
+  fi
 }
 
 # Parse command line arguments
 COMMAND="${1:-build}"
 
 case $COMMAND in
-  help)
+  help|-h|--help) ;;
+  *) refuse_idb_override_in_release_mode "$COMMAND";;
+esac
+
+case $COMMAND in
+  help|-h|--help)
     print_usage
     exit 0;;
   setup)
@@ -1435,27 +1166,14 @@ case $COMMAND in
     cmd_generate;;
   clean)
     cmd_clean;;
-  frameworks)
-    cmd_frameworks;;
-  install)
-    cmd_install;;
-  strip)
-    cmd_strip;;
-  sign-frameworks)
-    cmd_sign_frameworks;;
-  xcframeworks)
-    cmd_xcframeworks;;
-  sign-xcframeworks)
-    cmd_sign_xcframeworks;;
+  libraries)
+    cmd_libraries;;
+  verify-libraries)
+    cmd_verify_libraries;;
   dev)
     cmd_setup
     cmd_clean
-    cmd_frameworks
-    cmd_install
-    cmd_strip
-    cmd_sign_frameworks
-    cmd_xcframeworks
-    cmd_sign_xcframeworks;;
+    cmd_libraries;;
   executable)
     cmd_executable;;
   sign-executable)
@@ -1464,8 +1182,6 @@ case $COMMAND in
     cmd_package;;
   notarize)
     cmd_notarize;;
-  verify-xcframeworks)
-    cmd_verify_xcframeworks;;
   verify-arches)
     cmd_verify_arches;;
   build)

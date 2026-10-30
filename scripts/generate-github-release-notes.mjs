@@ -209,11 +209,13 @@ function buildInstallSection(version) {
     '',
     '```text',
     'axe',
-    'Frameworks/',
     'AXe_AXe.bundle/',
+    'Resources/',
     '```',
     '',
-    'Then either run `./axe` from the extracted directory or symlink that `axe` executable onto your `PATH` without moving it away from `Frameworks/` and `AXe_AXe.bundle/`.',
+    'AXe requires macOS 15 or later on Apple silicon.',
+    '',
+    'Then either run `./axe` from the extracted directory or symlink that `axe` executable onto your `PATH` without moving it away from `AXe_AXe.bundle/` and `Resources/`.',
   ].join('\n');
 }
 

@@ -72,22 +72,22 @@ struct KeyCombo: AsyncParsableCommand {
 
         // Build composite event:
         //   modifierDown1, modifierDown2, ..., shortKeyPress(key), ..., modifierUp2, modifierUp1
-        var events: [FBSimulatorHIDEvent] = []
+        var events: [SimulatorHIDEvent] = []
 
         // Press modifiers down in order
         for modifier in parsedModifiers {
-            events.append(FBSimulatorHIDEvent.keyboard(direction: .down, keyCode: UInt32(modifier)))
+            events.append(SimulatorHIDEvent.keyboard(direction: .down, keyCode: UInt32(modifier)))
         }
 
         // Press and release the target key
-        events.append(FBSimulatorHIDEvent.shortKeyPress(UInt32(key)))
+        events.append(SimulatorHIDEvent.shortKeyPress(UInt32(key)))
 
         // Release modifiers in reverse order
         for modifier in parsedModifiers.reversed() {
-            events.append(FBSimulatorHIDEvent.keyboard(direction: .up, keyCode: UInt32(modifier)))
+            events.append(SimulatorHIDEvent.keyboard(direction: .up, keyCode: UInt32(modifier)))
         }
 
-        let comboEvent = FBSimulatorHIDEvent.composite(events)
+        let comboEvent = SimulatorHIDEvent.composite(events)
 
         try await HIDInteractor
             .performHIDEvent(

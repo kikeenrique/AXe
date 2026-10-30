@@ -186,16 +186,16 @@ struct Gesture: AsyncParsableCommand {
         logger.info().log("Duration: \(gestureDuration)s, Delta: \(gestureDelta)px")
         
         // Create gesture events with timing controls
-        var events: [FBSimulatorHIDEvent] = []
+        var events: [SimulatorHIDEvent] = []
         
         // Add pre-delay if specified
         if let preDelay = preDelay, preDelay > 0 {
             logger.info().log("Pre-delay: \(preDelay)s")
-            events.append(FBSimulatorHIDEvent.delay(preDelay))
+            events.append(SimulatorHIDEvent.delay(preDelay))
         }
         
         // Add the main gesture
-        let gestureEvent = FBSimulatorHIDEvent.swipe(
+        let gestureEvent = SimulatorHIDEvent.swipe(
             coords.startX,
             yStart: coords.startY,
             xEnd: coords.endX,
@@ -208,11 +208,11 @@ struct Gesture: AsyncParsableCommand {
         // Add post-delay if specified
         if let postDelay = postDelay, postDelay > 0 {
             logger.info().log("Post-delay: \(postDelay)s")
-            events.append(FBSimulatorHIDEvent.delay(postDelay))
+            events.append(SimulatorHIDEvent.delay(postDelay))
         }
         
         // Execute the gesture sequence
-        let finalEvent = events.count == 1 ? events[0] : FBSimulatorHIDEvent.composite(events)
+        let finalEvent = events.count == 1 ? events[0] : SimulatorHIDEvent.composite(events)
         
         try await HIDInteractor
             .performHIDEvent(

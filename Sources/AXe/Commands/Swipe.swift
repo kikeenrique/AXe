@@ -111,16 +111,16 @@ struct Swipe: AsyncParsableCommand {
         )
 
         // Create swipe events with timing controls
-        var events: [FBSimulatorHIDEvent] = []
+        var events: [SimulatorHIDEvent] = []
         
         // Add pre-delay if specified
         if let preDelay = preDelay, preDelay > 0 {
             logger.info().log("Pre-delay: \(preDelay)s")
-            events.append(FBSimulatorHIDEvent.delay(preDelay))
+            events.append(SimulatorHIDEvent.delay(preDelay))
         }
         
         // Create main swipe HID event
-        let swipeEvent = FBSimulatorHIDEvent.swipe(
+        let swipeEvent = SimulatorHIDEvent.swipe(
             physicalStart.x,
             yStart: physicalStart.y,
             xEnd: physicalEnd.x,
@@ -133,11 +133,11 @@ struct Swipe: AsyncParsableCommand {
         // Add post-delay if specified
         if let postDelay = postDelay, postDelay > 0 {
             logger.info().log("Post-delay: \(postDelay)s")
-            events.append(FBSimulatorHIDEvent.delay(postDelay))
+            events.append(SimulatorHIDEvent.delay(postDelay))
         }
         
         // Execute the swipe sequence
-        let finalEvent = events.count == 1 ? events[0] : FBSimulatorHIDEvent.composite(events)
+        let finalEvent = events.count == 1 ? events[0] : SimulatorHIDEvent.composite(events)
         
         // Perform the swipe event
         try await HIDInteractor

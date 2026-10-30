@@ -115,7 +115,7 @@ struct Type: AsyncParsableCommand {
         }
         
         // Convert text to HID events using the new utility
-        let hidEvents: [FBSimulatorHIDEvent]
+        let hidEvents: [SimulatorHIDEvent]
         do {
             hidEvents = try TextToHIDEvents.convertTextToHIDEvents(inputText)
             logger.info().log("Successfully converted text to \(hidEvents.count) HID events")

@@ -31,13 +31,19 @@ AXe supports Xcode 26 and Xcode 27. Xcode 27 simulator automation uses Device Hu
 
 Release artifacts are built once with the Xcode version selected by the release environment and run unchanged with either supported Xcode selected. Compatibility was validated with Xcode 26.5 (build `17F42`) and iOS 26.5 (`23F77`), and with Xcode 27 Beta 3 (build `27A5218g`) and iOS 27 (`24A5380g`).
 
-AXe builds IDB from the immutable fork revision configured in `scripts/build.sh`, based on a verified upstream IDB revision. The build does not apply a local patch queue.
+AXe builds upstream IDB ([facebook/idb](https://github.com/facebook/idb)) from the immutable revision configured in `scripts/build.sh` and links its libraries statically. The build does not apply a local patch queue. AXe requires macOS 15 or later on Apple silicon.
+
+IDB loads CoreSimulator from the Xcode selected with `xcode-select`; it does not read `DEVELOPER_DIR`. AXe's own `xcrun simctl` calls do honour `DEVELOPER_DIR`, so select the Xcode you want with `xcode-select` rather than overriding it with `DEVELOPER_DIR` alone.
+
+IDB's accessibility service needs its simulator helper, `SimulatorFrameworkBridge-iOS`, from a `Resources/` directory beside the `axe` executable (the release and Homebrew layout). A `swift build` binary finds the checkout's `build_products/idb/bridge` instead; set `AXE_IDB_BRIDGE_DIR` to the directory that contains the helper to use another copy (a relative path resolves against the current directory; AXe fails with an error when the helper is not there).
+
+After some boots, or after an app is terminated and relaunched, the simulator's accessibility service can stop answering for minutes: it names no frontmost application, or returns an empty application element. When an accessibility read (`describe-ui`, selector taps, coordinate taps that read the screen) hits this, AXe restarts the simulator's `com.apple.CoreSimulator.bridge` with `xcrun simctl spawn <UDID> launchctl kickstart -k`, prints a warning on stderr, and retries once. A command (or a whole `batch`) restarts a simulator's bridge at most once; later failures are reported as they are. If the restart itself fails, AXe warns and keeps the original result. Set `AXE_AX_RECOVERY=never` to turn this off.
 
 ## E2E development
 
-`make e2e` rebuilds the local IDB XCFrameworks, builds AXe, and runs the simulator tests with the Xcode selected by `DEVELOPER_DIR` or `xcode-select`. XcodeGen is required to generate the IDB projects. When Xcode 27 is selected, the runner starts Device Hub, chooses an available iOS 27 iPhone 17 Pro, and boots it with `simctl`.
+`make e2e` rebuilds the local IDB libraries (`scripts/build.sh libraries`), builds AXe, and runs the simulator tests with the Xcode selected by `DEVELOPER_DIR` or `xcode-select`. XcodeGen is required to generate the IDB projects. When Xcode 27 is selected, the runner starts Device Hub, chooses an available iOS 27 iPhone 17 Pro, and boots it with `simctl`.
 
-To validate a release payload unchanged under another supported Xcode, first build the test bundle with that Xcode, then run `AXE_BIN_PATH=/path/to/release/axe ./test-runner.sh --tests-only`. The supplied executable must retain its packaged frameworks beside it.
+To validate a release payload unchanged under another supported Xcode, first build the test bundle with that Xcode, then run `AXE_BIN_PATH=/path/to/release/axe ./test-runner.sh --tests-only`. The supplied executable must keep its packaged `AXe_AXe.bundle` and `Resources/` beside it.
 
 ## Basic usage
 

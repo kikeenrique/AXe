@@ -4,7 +4,7 @@ import FBControlCore
 
 extension HIDBroker {
     static func currentBootIdentity(simulatorUDID: String) throws -> HIDBrokerBootIdentity {
-        let processes = FBProcessFetcher().processes(withProcessName: "launchd_sim").filter {
+        let processes = ProcessFetcher().processes(withProcessName: "launchd_sim").filter {
             $0.arguments.contains { $0.contains(simulatorUDID) }
         }
         let identities = processes.compactMap { bootIdentity(processIdentifier: $0.processIdentifier) }
@@ -59,8 +59,36 @@ extension HIDBroker {
         return max(0, minimumUptime - uptime)
     }
 
-    static func isDTUHIDSelected(processIdentifier: pid_t) -> Bool {
-        processIdentifier > 0
+    // MARK: Transport selection
+
+    /// Copied from upstream idb v1.7.7 `SimulatorHIDTransportSelection.firstDTUHIDCoreSimulatorVersion`
+    /// (internal there): the first CoreSimulator version that injects `dtuhidd` into the guest.
+    static let firstDTUHIDCoreSimulatorVersion = "1155.4"
+
+    /// Whether `coreSimulatorVersion` ships `dtuhidd`, compared numerically so `1155.10` sorts above
+    /// `1155.4`. Same rule as upstream `SimulatorHIDTransportSelection.shipsDTUHID(coreSimulatorVersion:)`.
+    static func shipsDTUHID(coreSimulatorVersion: String?) -> Bool {
+        guard let coreSimulatorVersion else {
+            return false
+        }
+        return coreSimulatorVersion.compare(firstDTUHIDCoreSimulatorVersion, options: .numeric) != .orderedAscending
+    }
+
+    /// The CoreSimulator framework version loaded in this process, read from the bundle that vends
+    /// `SimDevice` (upstream `SimulatorControlFrameworkLoader.loadedCoreSimulatorVersion`, private
+    /// there). `nil` before CoreSimulator is loaded.
+    static var loadedCoreSimulatorVersion: String? {
+        guard let simDeviceClass = NSClassFromString("SimDevice") else {
+            return nil
+        }
+        return Bundle(for: simDeviceClass).infoDictionary?["CFBundleVersion"] as? String
+    }
+
+    /// True when IDB picks the DTUHID transport by default, which it decides from the loaded
+    /// CoreSimulator version alone. `dtuhidd` is demand-launched and exits under memory pressure, so
+    /// whether it is running says nothing about the transport.
+    static func usesDTUHID() -> Bool {
+        shipsDTUHID(coreSimulatorVersion: loadedCoreSimulatorVersion)
     }
 
     static func waitForHIDReadiness(

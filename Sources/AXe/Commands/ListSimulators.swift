@@ -10,16 +10,10 @@ struct ListSimulators: AsyncParsableCommand {
 
     func run() async throws {
         let logger = AxeLogger()
-        
+
         try await performGlobalSetup(logger: logger)
 
-        let simulatorSet = try await getSimulatorSet(
-            deviceSetPath: nil,
-            logger: logger,
-            reporter: EmptyEventReporter.shared
-        )
-        
-        let simulators = simulatorSet.allSimulators
+        let simulators = try await SimulatorSession.allSimulators(logger: logger)
         simulators.forEach { print($0.description) }
     }
-} 
+}

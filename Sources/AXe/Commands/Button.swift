@@ -9,22 +9,25 @@ enum ButtonType: String, CaseIterable, ExpressibleByArgument {
     case lock = "lock"
     case sideButton = "side-button"
     case siri = "siri"
-    
-    var hidButton: FBSimulatorHIDButton {
+
+    /// Gap between the two side-button presses that make up an Apple Pay press over DTUHID.
+    static let applePayPressGap: TimeInterval = 0.15
+
+    var hidButton: SimulatorHIDButton {
         switch self {
         case .applePay:
-            return FBSimulatorHIDButton(rawValue: 1)! // FBSimulatorHIDButtonApplePay
+            return .applePay
         case .home:
-            return FBSimulatorHIDButton(rawValue: 2)! // FBSimulatorHIDButtonHomeButton
+            return .homeButton
         case .lock:
-            return FBSimulatorHIDButton(rawValue: 3)! // FBSimulatorHIDButtonLock
+            return .lock
         case .sideButton:
-            return FBSimulatorHIDButton(rawValue: 4)! // FBSimulatorHIDButtonSideButton
+            return .sideButton
         case .siri:
-            return FBSimulatorHIDButton(rawValue: 5)! // FBSimulatorHIDButtonSiri
+            return .siri
         }
     }
-    
+
     var description: String {
         switch self {
         case .applePay:
@@ -39,6 +42,54 @@ enum ButtonType: String, CaseIterable, ExpressibleByArgument {
             return "Siri button"
         }
     }
+
+    /// The HID event for one press, held for `duration` seconds when given.
+    ///
+    /// DTUHID has no Apple Pay usage: Apple Pay is a double side-button press, and IDB refuses
+    /// `.applePay` on that transport. Over DTUHID AXe sends two side-button presses
+    /// `applePayPressGap` apart, each held for half of `duration`.
+    func pressEvent(duration: Double?, overDTUHID: Bool) -> SimulatorHIDEvent {
+        if self == .applePay, overDTUHID {
+            let half = duration.map { $0 / 2 }
+            return .composite([
+                Self.press(.sideButton, duration: half),
+                .delay(Self.applePayPressGap),
+                Self.press(.sideButton, duration: half),
+            ])
+        }
+        return Self.press(hidButton, duration: duration)
+    }
+
+    private static func press(_ button: SimulatorHIDButton, duration: Double?) -> SimulatorHIDEvent {
+        guard let duration else {
+            return .shortButtonPress(button)
+        }
+        return .composite([
+            .button(direction: .down, button: button),
+            .delay(duration),
+            .button(direction: .up, button: button),
+        ])
+    }
+
+    /// Presses the button in `session`.
+    ///
+    /// The transport is predicted from the CoreSimulator version, as IDB chooses it. Should IDB
+    /// still refuse `.applePay` because it negotiated DTUHID, nothing was sent (the refusal comes
+    /// on the first button-down), so the press is resent as two side-button presses.
+    @MainActor
+    func perform(duration: Double?, in session: HIDInteractor.Session, logger: AxeLogger) async throws {
+        let overDTUHID = self == .applePay && HIDBroker.usesDTUHID()
+        do {
+            try await HIDInteractor.performHIDEvent(pressEvent(duration: duration, overDTUHID: overDTUHID), in: session, logger: logger)
+        } catch SimulatorHIDError.notImplementedOnDTUHIDTransport where self == .applePay && !overDTUHID {
+            logger.info().log("IDB refused the Apple Pay usage on DTUHID; sending two side-button presses instead")
+            try await HIDInteractor.performHIDEvent(pressEvent(duration: duration, overDTUHID: true), in: session, logger: logger)
+        } catch SimulatorHIDError.notImplementedOnDTUHIDTransport {
+            throw CLIError(
+                errorDescription: "The simulator's input transport (DTUHID) cannot press \(description). No button was pressed."
+            )
+        }
+    }
 }
 
 struct Button: AsyncParsableCommand {
@@ -46,20 +97,20 @@ struct Button: AsyncParsableCommand {
         abstract: "Press a hardware button on the simulator.",
         discussion: """
         Available buttons: apple-pay, home, lock, side-button, siri
-        
+
         Examples:
           axe button home --udid SIMULATOR_UDID
           axe button lock --duration 2.0 --udid SIMULATOR_UDID
           axe button siri --udid SIMULATOR_UDID
         """
     )
-    
+
     @Argument(help: "The button to press.")
     var buttonType: ButtonType
-    
+
     @Option(name: .customLong("duration"), help: "Duration to hold the button in seconds (optional).")
     var duration: Double?
-    
+
     @Option(name: .customLong("udid"), help: "The UDID of the simulator.")
     var simulatorUDID: String
 
@@ -78,7 +129,7 @@ struct Button: AsyncParsableCommand {
     func run() async throws {
         let logger = AxeLogger()
         try await setup(logger: logger)
-        
+
         try await performGlobalSetup(logger: logger)
 
         logger.info().log("Pressing \(buttonType.description)")
@@ -86,33 +137,9 @@ struct Button: AsyncParsableCommand {
             logger.info().log("Duration: \(duration) seconds")
         }
 
-        // Create button HID event
-        let buttonEvent: FBSimulatorHIDEvent
-        
-        if let duration = duration {
-            // For duration-based presses, we need to create separate down/up events with delay
-            let buttonDownEvent = FBSimulatorHIDEvent.button(direction: .down, button: buttonType.hidButton)
-            let delayEvent = FBSimulatorHIDEvent.delay(duration)
-            let buttonUpEvent = FBSimulatorHIDEvent.button(direction: .up, button: buttonType.hidButton)
+        let session = try await HIDInteractor.makeSession(for: simulatorUDID, logger: logger)
+        try await buttonType.perform(duration: duration, in: session, logger: logger)
 
-            buttonEvent = FBSimulatorHIDEvent.composite([
-                buttonDownEvent,
-                delayEvent,
-                buttonUpEvent
-            ])
-        } else {
-            // Simple short button press
-            buttonEvent = FBSimulatorHIDEvent.shortButtonPress(buttonType.hidButton)
-        }
-        
-        // Perform the button event
-        try await HIDInteractor
-            .performHIDEvent(
-                buttonEvent,
-                for: simulatorUDID,
-                logger: logger
-            )
-        
         logger.info().log("\(buttonType.description) press completed successfully")
     }
-} 
+}

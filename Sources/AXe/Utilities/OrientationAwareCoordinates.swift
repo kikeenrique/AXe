@@ -3,6 +3,7 @@ import Foundation
 import AXeCore
 import FBControlCore
 import FBSimulatorControl
+import FBSimulatorServices
 
 // MARK: - Simulator Orientation
 
@@ -41,7 +42,7 @@ enum SimulatorOrientation: String, CaseIterable {
 // MARK: - Coordinate Mapping
 
 /// Describes how logical coordinates from the accessibility tree map to the physical
-/// portrait coordinate space that FBSimulatorHIDEvent expects.
+/// portrait coordinate space that SimulatorHIDEvent expects.
 ///
 /// The AX application frame alone cannot distinguish two landscape cases:
 ///   - **Rotation:**  hardware is in landscape (device rotated). Rotation math applies.
@@ -49,9 +50,9 @@ enum SimulatorOrientation: String, CaseIterable {
 ///     orientations. iOS scales + centers the landscape UI inside the portrait
 ///     viewport. Scale + offset math applies.
 ///
-/// Detection: read SimulatorKit's private screen `uiOrientation` when available,
-/// then fall back to screenshot pixel aspect ratio to distinguish portrait-hardware
-/// letterboxing from a rotated simulator.
+/// Detection: read the active display's rotation from IDB (or the device orientation on
+/// runtimes without display reports), then fall back to screenshot pixel aspect ratio to
+/// distinguish portrait-hardware letterboxing from a rotated simulator.
 enum CoordinateMapping {
     /// Portrait device, portrait app — pass coordinates through unchanged.
     case passthrough
@@ -67,11 +68,40 @@ enum CoordinateMapping {
     case letterbox(scale: Double, offsetX: Double, offsetY: Double)
 }
 
+// MARK: - IDB Touch Routing
+
+/// Whether IDB routes touches to a display whose geometry it knows, and so clamps and unrotates
+/// interface points itself.
+///
+/// Mirrors upstream `SimulatorHIDOperation.route`: a touch is bound to a display (and rotated by
+/// that display's interface rotation) when `resolveDisplay()` yields a target, which is exactly
+/// when `SimulatorDisplayConfiguration.activeGeometry()` succeeds: an identified active display
+/// (iOS 27 reports) or the sole integrated display of a legacy report (Xcode 27.x driving an iOS 26
+/// runtime, which sends no display identity but does send the geometry and rotation). A failed
+/// read, unknown activity, several legacy displays, or no/several active displays fall back to
+/// the main display with raw points; a transitioning layout makes IDB refuse the touch.
+/// `activeDisplay()` is not the right test: it throws for the legacy report that IDB still routes.
+enum IDBTouchRouting: Equatable {
+    /// IDB binds the touch to the active display and unrotates interface points: AXe passes them through.
+    case activeDisplay
+    /// IDB sends the points raw to the main display: AXe applies its own rotation.
+    case rawPoints(reason: String)
+
+    init(configuration: SimulatorDisplayConfiguration) {
+        do {
+            _ = try configuration.activeGeometry()
+            self = .activeDisplay
+        } catch {
+            self = .rawPoints(reason: error.localizedDescription)
+        }
+    }
+}
+
 // MARK: - Orientation-Aware Coordinate Translation
 
 /// Translates logical UI coordinates (as reported by the accessibility tree and
 /// consumed by `axe tap`, `axe touch`, and `axe swipe`) into the physical portrait
-/// coordinate space that FBSimulatorHIDEvent expects.
+/// coordinate space that SimulatorHIDEvent expects.
 ///
 /// ## Root cause
 /// The iOS Simulator's HID layer always operates in physical portrait space.
@@ -82,13 +112,12 @@ enum CoordinateMapping {
 ///
 /// ## Two landscape cases
 /// Both a rotated device and a portrait device running a landscape-only app produce
-/// a landscape-shaped AX application frame. AXe first asks the simulator's private
-/// screen properties for the current UI orientation so it can distinguish landscape
-/// left from landscape right automatically. If that private probe is unavailable,
-/// screenshot dimensions are used only to distinguish rotated hardware from a
-/// portrait device running a letterboxed landscape-only app. If the screenshot
-/// confirms rotated hardware but private orientation is unavailable, AXe fails
-/// clearly instead of guessing landscape direction.
+/// a landscape-shaped AX application frame. AXe first asks IDB for the active display's
+/// interface rotation so it can distinguish landscape left from landscape right
+/// automatically. If the orientation is unavailable, screenshot dimensions are used only
+/// to distinguish rotated hardware from a portrait device running a letterboxed
+/// landscape-only app. If the screenshot confirms rotated hardware but the orientation is
+/// unavailable, AXe fails clearly instead of guessing landscape direction.
 ///
 /// ## Portrait dimensions
 /// The short side of the device in points is the portrait width; the long side
@@ -104,9 +133,9 @@ struct OrientationAwareCoordinates {
     ///
     /// Detection flow:
     /// 1. Fetch AX application frame.
-    /// 2. If an explicit override was supplied → rotation case.
-    /// 3. Otherwise read SimulatorKit private UI orientation.
-    /// 4. If private orientation is unavailable and the AX frame is portrait-shaped → passthrough.
+    /// 2. If an explicit override was supplied → rotation case (passthrough when IDB rotates).
+    /// 3. Otherwise read the interface orientation (`interfaceOrientation(simulatorUDID:logger:)`).
+    /// 4. If the orientation is unavailable and the AX frame is portrait-shaped → passthrough.
     /// 5. If unavailable and landscape-shaped, probe screenshot dimensions.
     ///    - Screenshot portrait-shaped (taller than wide) → letterbox case.
     ///    - Screenshot landscape-shaped (wider than tall) → rotated device case.
@@ -115,7 +144,7 @@ struct OrientationAwareCoordinates {
     ///   - simulatorUDID: Target simulator UDID.
     ///   - orientationOverride: Forces a specific rotated-device `SimulatorOrientation`.
     ///     Intended for internal tests or future explicit callers; normal CLI commands
-    ///     rely on automatic private orientation detection.
+    ///     rely on automatic orientation detection.
     ///   - logger: AXe logger instance.
     /// - Returns: The `CoordinateMapping` that applies to the current simulator state.
     static func detectMapping(
@@ -151,15 +180,20 @@ struct OrientationAwareCoordinates {
             guard let portraitSize = portraitDimensions(from: roots, orientation: orientationOverride) else {
                 throw CLIError(errorDescription: "Unable to determine coordinate mapping because portrait dimensions are unavailable.")
             }
-            return .rotation(orientationOverride, portraitSize: portraitSize)
+            guard orientationOverride != .portrait else {
+                return .rotation(orientationOverride, portraitSize: portraitSize)
+            }
+            return rotatedMapping(
+                orientationOverride,
+                portraitSize: portraitSize,
+                routing: await idbTouchRouting(simulatorUDID: simulatorUDID, logger: logger),
+                logger: logger
+            )
         }
 
-        // Prefer the simulator's private UI orientation state when available; this
+        // Prefer the simulator's reported interface rotation when available; this
         // distinguishes landscape-left from landscape-right and catches upside-down portrait.
-        let simulatorOrientation = await SimulatorOrientationReader.currentOrientation(
-            simulatorUDID: simulatorUDID,
-            logger: logger
-        )
+        let simulatorOrientation = await interfaceOrientation(simulatorUDID: simulatorUDID, logger: logger)
 
         if let simulatorOrientation {
             logger.info().log("Detected simulator UI orientation: \(simulatorOrientation.rawValue)")
@@ -176,7 +210,12 @@ struct OrientationAwareCoordinates {
                     "Simulator reports portrait but AX frame \(Int(appFrame.width))×\(Int(appFrame.height)) is landscape; probing for letterbox mapping"
                 )
             case .portraitUpsideDown, .landscape, .landscapeFlipped:
-                return .rotation(simulatorOrientation, portraitSize: portraitSize)
+                return rotatedMapping(
+                    simulatorOrientation,
+                    portraitSize: portraitSize,
+                    routing: await idbTouchRouting(simulatorUDID: simulatorUDID, logger: logger),
+                    logger: logger
+                )
             }
         }
 
@@ -229,7 +268,98 @@ struct OrientationAwareCoordinates {
             "Screenshot \(screenshotDims.width)×\(screenshotDims.height)px is landscape-shaped; using rotation mapping"
         )
 
-        throw CLIError(errorDescription: "Unable to determine rotated simulator orientation. AXe can read landscape coordinates only when SimulatorKit reports the current UI orientation; the screenshot confirms the simulator is rotated, but the private orientation probe was unavailable.")
+        if await idbTouchRouting(simulatorUDID: simulatorUDID, logger: logger) == .activeDisplay {
+            logger.info().log("IDB reads the active display's rotation and rotates touches itself; passing interface points through")
+            return .passthrough
+        }
+
+        throw CLIError(errorDescription: "Unable to determine rotated simulator orientation. AXe can read landscape coordinates only when the simulator reports the current interface or device orientation; the screenshot confirms the simulator is rotated, but neither was available.")
+    }
+
+    /// The mapping for a rotated single-display simulator: AXe's own rotation only when IDB sends
+    /// the points raw. When IDB routes to the active display it unrotates interface points itself,
+    /// and rotating them here as well would land the touch in the wrong place.
+    static func rotatedMapping(
+        _ orientation: SimulatorOrientation,
+        portraitSize: (width: Double, height: Double),
+        routing: IDBTouchRouting,
+        logger: AxeLogger? = nil
+    ) -> CoordinateMapping {
+        switch routing {
+        case .activeDisplay:
+            logger?.info().log("IDB reads the active display's rotation and rotates touches itself; passing interface points through")
+            return .passthrough
+        case .rawPoints:
+            return .rotation(orientation, portraitSize: portraitSize)
+        }
+    }
+
+    /// The interface orientation of the active display: the rotation of IDB's display
+    /// configuration, or on runtimes that report no usable display, the device orientation IDB
+    /// reads (device `landscapeRight` shows `landscape`). `nil` when neither is available.
+    static func interfaceOrientation(simulatorUDID: String, logger: AxeLogger) async -> SimulatorOrientation? {
+        guard let simulator = (try? SimulatorSession.simulator(udid: simulatorUDID, logger: logger)) ?? nil else {
+            logger.info().log("Orientation probe: simulator \(simulatorUDID) not found")
+            return nil
+        }
+        do {
+            let rotation = try await simulator.displays.configuration().activeGeometry().rotation
+            logger.info().log("Orientation probe: active display rotation \(rotation.rawValue)")
+            return orientation(for: rotation)
+        } catch {
+            logger.info().log("Orientation probe: no display rotation (\(error.localizedDescription)); reading the device orientation")
+        }
+        do {
+            switch try await simulator.orientation.current() {
+            case .portrait:
+                return .portrait
+            case .portraitUpsideDown:
+                return .portraitUpsideDown
+            case .landscapeRight:
+                return .landscape
+            case .landscapeLeft:
+                return .landscapeFlipped
+            default:
+                return nil
+            }
+        } catch {
+            logger.info().log("Orientation probe failed: \(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    /// How IDB will treat the touches AXe sends to this simulator (see `IDBTouchRouting`).
+    static func idbTouchRouting(simulatorUDID: String, logger: AxeLogger) async -> IDBTouchRouting {
+        do {
+            guard let simulator = try SimulatorSession.simulator(udid: simulatorUDID, logger: logger) else {
+                return .rawPoints(reason: "simulator \(simulatorUDID) not found")
+            }
+            let routing = IDBTouchRouting(configuration: try await simulator.displays.configuration())
+            if case .rawPoints(let reason) = routing {
+                logger.info().log("IDB has no active display to route to (\(reason)); AXe rotates touches")
+            }
+            return routing
+        } catch {
+            logger.info().log("IDB display configuration unavailable (\(error.localizedDescription)); AXe rotates touches")
+            return .rawPoints(reason: error.localizedDescription)
+        }
+    }
+
+    /// The interface orientation shown with an IDB display rotation, relative to the panel's
+    /// native portrait axes. `nil` for a rotation this build of AXe does not know.
+    static func orientation(for rotation: SimulatorDisplayRotation) -> SimulatorOrientation? {
+        switch rotation {
+        case .upright:
+            return .portrait
+        case .clockwise:
+            return .landscape
+        case .upsideDown:
+            return .portraitUpsideDown
+        case .counterclockwise:
+            return .landscapeFlipped
+        @unknown default:
+            return nil
+        }
     }
 
     // MARK: - Screenshot Dimension Probe
@@ -335,7 +465,7 @@ struct OrientationAwareCoordinates {
     // MARK: - Coordinate Translation
 
     /// Translates a logical point (as reported by the accessibility tree) to the
-    /// physical portrait point expected by FBSimulatorHIDEvent using rotation math.
+    /// physical portrait point expected by SimulatorHIDEvent using rotation math.
     ///
     /// - Parameters:
     ///   - point: Logical (x, y) in the current UI orientation.
@@ -410,7 +540,7 @@ struct OrientationAwareCoordinates {
     // MARK: - Full Pipeline
 
     /// Detects the appropriate coordinate mapping and translates a single logical
-    /// point to the physical portrait point expected by FBSimulatorHIDEvent.
+    /// point to the physical portrait point expected by SimulatorHIDEvent.
     ///
     /// This is the single entry point used by `Tap`, `Touch`, and `Swipe`.
     ///
@@ -426,7 +556,7 @@ struct OrientationAwareCoordinates {
     ///     `.landscapeFlipped` when the device is rotated counter-clockwise. Leave nil for
     ///     automatic letterbox detection in portrait-hardware landscape-only apps.
     ///   - logger: AXe logger instance.
-    /// - Returns: Physical (x, y) ready for FBSimulatorHIDEvent.
+    /// - Returns: Physical (x, y) ready for SimulatorHIDEvent.
     static func translate(
         point: (x: Double, y: Double),
         for simulatorUDID: String,
@@ -469,7 +599,7 @@ struct OrientationAwareCoordinates {
     ///   - simulatorUDID: Target simulator UDID.
     ///   - orientationOverride: Optional explicit orientation for the rotated device case.
     ///   - logger: AXe logger instance.
-    /// - Returns: Physical (x, y) pairs ready for FBSimulatorHIDEvent, in the same order as input.
+    /// - Returns: Physical (x, y) pairs ready for SimulatorHIDEvent, in the same order as input.
     static func translateBatch(
         points: [(x: Double, y: Double)],
         for simulatorUDID: String,

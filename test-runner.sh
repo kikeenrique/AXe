@@ -235,21 +235,21 @@ clean_build() {
     fi
 }
 
-build_idb_xcframeworks() {
-    print_header "Building IDB Frameworks"
+build_idb_libraries() {
+    print_header "Building IDB Libraries"
 
     if ! command -v xcodegen &> /dev/null; then
-        print_error "XcodeGen is required to build IDB frameworks. Install it with 'brew install xcodegen'."
+        print_error "XcodeGen is required to build the IDB libraries. Install it with 'brew install xcodegen'."
         exit 1
     fi
 
     local command
-    for command in setup clean frameworks install strip xcframeworks; do
+    for command in setup clean libraries; do
         scripts/build.sh "$command"
     done
 
     run_selected_swift package clean
-    print_success "IDB frameworks built with Xcode $SELECTED_XCODE_VERSION"
+    print_success "IDB libraries built with Xcode $SELECTED_XCODE_VERSION"
 }
 
 # Function to build AXe executable
@@ -290,12 +290,8 @@ ensure_test_framework_rpaths() {
     local package_frameworks_dir="$build_dir/PackageFrameworks"
     mkdir -p "$package_frameworks_dir"
 
-    local framework_names=(
-        "FBControlCore.framework"
-        "FBDeviceControl.framework"
-        "FBSimulatorControl.framework"
-        "XCTestBootstrap.framework"
-    )
+    # IDB is linked statically; only frameworks SwiftPM itself builds need links here.
+    local framework_names=()
 
     local framework
     for framework in "$build_dir"/*.framework "$build_dir"/ExecutableModules/*.framework; do
@@ -531,7 +527,7 @@ main() {
     check_prerequisites
 
     if [[ "$UNIT_TESTS" == true ]]; then
-        build_idb_xcframeworks
+        build_idb_libraries
         build_axe
         run_unit_tests
         print_header "Summary"
@@ -549,7 +545,7 @@ main() {
     boot_simulator
 
     if [[ "$TESTS_ONLY" != true ]]; then
-        build_idb_xcframeworks
+        build_idb_libraries
         clean_build
         build_axe
         ensure_test_framework_rpaths

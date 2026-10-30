@@ -24,7 +24,7 @@ struct TextToHIDEvents {
     // MARK: - Simple Key Event Creation
     
     /// Creates key events for a character that doesn't require shift
-    private static func simpleKeyEvent(keyCode: Int) -> [FBSimulatorHIDEvent] {
+    private static func simpleKeyEvent(keyCode: Int) -> [SimulatorHIDEvent] {
         return [
             .keyboard(direction: .down, keyCode: UInt32(keyCode)),
             .keyboard(direction: .up, keyCode: UInt32(keyCode))
@@ -32,7 +32,7 @@ struct TextToHIDEvents {
     }
     
     /// Creates key events for a character that requires shift
-    private static func shiftedKeyEvent(keyCode: Int) -> [FBSimulatorHIDEvent] {
+    private static func shiftedKeyEvent(keyCode: Int) -> [SimulatorHIDEvent] {
         return [
             .keyboard(direction: .down, keyCode: 225),
             .keyboard(direction: .down, keyCode: UInt32(keyCode)),
@@ -44,7 +44,7 @@ struct TextToHIDEvents {
     // MARK: - Character to HID Event Mapping
     
     /// Converts a single character to its corresponding HID events
-    private static func eventsForCharacter(_ character: Character) throws -> [FBSimulatorHIDEvent] {
+    private static func eventsForCharacter(_ character: Character) throws -> [SimulatorHIDEvent] {
         let charString = String(character)
         let keyEvent = KeyEvent.keyCodeForString(charString)
         
@@ -78,10 +78,10 @@ struct TextToHIDEvents {
     
     /// Converts a text string to a sequence of HID events
     /// - Parameter text: The text string to convert
-    /// - Returns: An array of FBSimulatorHIDEvent objects representing the key presses
+    /// - Returns: An array of SimulatorHIDEvent objects representing the key presses
     /// - Throws: TextConversionError.unsupportedCharacter if any character is not supported
-    static func convertTextToHIDEvents(_ text: String) throws -> [FBSimulatorHIDEvent] {
-        var events: [FBSimulatorHIDEvent] = []
+    static func convertTextToHIDEvents(_ text: String) throws -> [SimulatorHIDEvent] {
+        var events: [SimulatorHIDEvent] = []
         
         for character in text {
             let characterEvents = try eventsForCharacter(character)

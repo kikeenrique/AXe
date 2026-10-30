@@ -26,29 +26,26 @@ HOMEBREW_ARCHIVE="$OUT_DIR/AXe-macOS-homebrew-${TAG}.tar.gz"
 FORMULA_OUT="$OUT_DIR/${FORMULA_NAME}.rb"
 
 mkdir -p \
-  "$PACKAGE_ROOT/Frameworks/FBControlCore.framework" \
-  "$PACKAGE_ROOT/Frameworks/XCTestBootstrap.framework" \
-  "$PACKAGE_ROOT/Frameworks/FBSimulatorControl.framework" \
-  "$PACKAGE_ROOT/Frameworks/FBDeviceControl.framework" \
+  "$PACKAGE_ROOT/Resources" \
   "$PACKAGE_ROOT/AXe_AXe.bundle" \
   "$OUT_DIR"
 
-echo "[release-dry-run] Preparing universal test binary"
+echo "[release-dry-run] Preparing arm64 test binaries"
 BIN_PATH="/usr/bin/file"
+# Stands in for the simulator helper: any signed arm64 binary whose signature must survive.
+BRIDGE_STAND_IN="/usr/bin/true"
 
-if [[ ! -f "$BIN_PATH" ]]; then
-  echo "[release-dry-run] ERROR: required system binary missing at $BIN_PATH"
-  exit 1
-fi
-
-lipo -info "$BIN_PATH" | grep -q "arm64"
-lipo -info "$BIN_PATH" | grep -q "x86_64"
+for required_binary in "$BIN_PATH" "$BRIDGE_STAND_IN"; do
+  if [[ ! -f "$required_binary" ]]; then
+    echo "[release-dry-run] ERROR: required system binary missing at $required_binary"
+    exit 1
+  fi
+  lipo -info "$required_binary" | grep -q "arm64"
+done
 
 cp "$BIN_PATH" "$PACKAGE_ROOT/axe"
-cp "$BIN_PATH" "$PACKAGE_ROOT/Frameworks/FBControlCore.framework/FBControlCore"
-cp "$BIN_PATH" "$PACKAGE_ROOT/Frameworks/XCTestBootstrap.framework/XCTestBootstrap"
-cp "$BIN_PATH" "$PACKAGE_ROOT/Frameworks/FBSimulatorControl.framework/FBSimulatorControl"
-cp "$BIN_PATH" "$PACKAGE_ROOT/Frameworks/FBDeviceControl.framework/FBDeviceControl"
+cp "$BRIDGE_STAND_IN" "$PACKAGE_ROOT/Resources/SimulatorFrameworkBridge-iOS"
+codesign --verify --strict "$PACKAGE_ROOT/Resources/SimulatorFrameworkBridge-iOS"
 printf 'name: axe\n' > "$PACKAGE_ROOT/AXe_AXe.bundle/manifest.txt"
 
 PACKAGE_ZIP="$WORK_DIR/AXe-Final-dryrun.zip"
@@ -65,7 +62,7 @@ CONTAMINATED_DIR="$WORK_DIR/contaminated-output"
 CONTAMINATED_STAGE="$WORK_DIR/contaminated-stage"
 cp -R "$PACKAGE_ROOT" "$CONTAMINATED_DIR"
 touch "$CONTAMINATED_DIR/._axe" \
-  "$CONTAMINATED_DIR/Frameworks/FBControlCore.framework/._FBControlCore"
+  "$CONTAMINATED_DIR/Resources/._SimulatorFrameworkBridge-iOS"
 xattr -w com.example.axe-dry-run test "$CONTAMINATED_DIR/axe"
 ./scripts/release-artifacts.sh stage-build-output \
   --build-output-dir "$CONTAMINATED_DIR" \
@@ -93,10 +90,14 @@ HOMEBREW_SHA="$(shasum -a 256 "$HOMEBREW_ARCHIVE" | awk '{print $1}')"
   --sha256 "$HOMEBREW_SHA" \
   > "$FORMULA_OUT"
 
-grep -q 'depends_on macos: :sonoma' "$FORMULA_OUT"
-grep -q 'libexec.install "axe", "Frameworks", "AXe_AXe.bundle"' "$FORMULA_OUT"
+grep -q 'depends_on arch: :arm64' "$FORMULA_OUT"
+grep -q 'depends_on macos: :sequoia' "$FORMULA_OUT"
+grep -q 'libexec.install "axe", "AXe_AXe.bundle", "Resources"' "$FORMULA_OUT"
 grep -q 'bin.write_exec_script libexec/"axe"' "$FORMULA_OUT"
 grep -q 'def post_install' "$FORMULA_OUT"
+# post_install must re-sign axe only, never the simulator helper.
+[[ "$(grep -c '"codesign"' "$FORMULA_OUT")" -eq 1 ]]
+! grep -q 'Frameworks' "$FORMULA_OUT"
 
 tmp_dir="$WORK_DIR/normalized-formulas"
 mkdir -p "$tmp_dir"

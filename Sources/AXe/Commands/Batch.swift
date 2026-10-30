@@ -1,4 +1,5 @@
 import ArgumentParser
+import FBSimulatorControl
 import Foundation
 
 struct Batch: AsyncParsableCommand {
@@ -118,10 +119,11 @@ struct Batch: AsyncParsableCommand {
                 )
                 try await runner.run(BatchPlan(primitives: primitives))
             } catch {
+                let message = Self.stepFailureMessage(for: error)
                 if continueOnError {
-                    failures.append("Step \(index + 1) failed: [\(stepName)] -> \(error.localizedDescription)")
+                    failures.append("Step \(index + 1) failed: [\(stepName)] -> \(message)")
                 } else {
-                    throw CLIError(errorDescription: "Step \(index + 1) failed: [\(stepName)]\n\(error.localizedDescription)")
+                    throw CLIError(errorDescription: "Step \(index + 1) failed: [\(stepName)]\n\(message)")
                 }
             }
         }
@@ -132,6 +134,21 @@ struct Batch: AsyncParsableCommand {
         }
 
         print("✓ Batch completed successfully (\(stepLines.count) steps)")
+    }
+
+    /// The user-facing text of a step failure.
+    static func stepFailureMessage(for error: Error) -> String {
+        if let error = error as? SimulatorDisplayError {
+            switch error {
+            case .changed, .transitioning:
+                // IDB binds a step's HID events to the display active at its first touch and stops
+                // the step when that display rotates before the step ends.
+                return "The simulator display changed (for example a rotation) while this step's input was being sent, so IDB stopped the step; its remaining events were not sent. Re-run the batch from this step. (\(error.localizedDescription))"
+            default:
+                break
+            }
+        }
+        return error.localizedDescription
     }
 
     private func loadStepLines() throws -> [String] {

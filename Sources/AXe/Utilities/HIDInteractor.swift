@@ -13,12 +13,10 @@ struct HIDInteractor {
 
     struct Session {
         let simulatorUDID: String
-        let simulator: FBSimulator
-        let hid: FBSimulatorHID
+        let simulator: Simulator
+        let hid: SimulatorHID
     }
 
-    // Cache for HID connections per simulator
-    private static var hidConnections: [String: FBSimulatorHID] = [:]
     /// Configurable stabilization delay to ensure HID events are fully processed
     /// Can be set via AXE_HID_STABILIZATION_MS environment variable
     private static var stabilizationDelayMs: UInt64 {
@@ -30,73 +28,40 @@ struct HIDInteractor {
     }
 
     static func makeSession(for simulatorUDID: String, logger: AxeLogger) async throws -> Session {
-        logger.info().log("Loading private frameworks for HID operations...")
-        let frameworkLoader = FBSimulatorControlFrameworkLoader.xcodeFrameworks
-        do {
-            try frameworkLoader.loadPrivateFrameworks(logger)
-            logger.info().log("Private frameworks loaded successfully.")
-        } catch {
-            logger.error().log("Failed to load private frameworks: \(error)")
-            throw CLIError(
-                errorDescription: "AXe could not initialize simulator input using the selected Xcode installation. Confirm Xcode 26 or later is selected and try again."
-            )
-        }
-
-        let simulatorSet = try await getSimulatorSet(deviceSetPath: nil, logger: logger, reporter: EmptyEventReporter.shared)
-        logger.info().log("FBSimulatorSet obtained.")
-
-        guard let simulator = simulatorSet.allSimulators.first(where: { $0.udid == simulatorUDID }) else {
-            throw CLIError.simulatorNotFound(udid: simulatorUDID)
-        }
-
-        logger.info().log("Target (FBSimulator) obtained: \(simulator.udid)")
-        logger.info().log("Simulator name: \(simulator.name)")
-
-        guard simulator.state == .booted else {
-            let stateDescription = FBiOSTargetStateStringFromState(simulator.state)
-            throw CLIError(
-                errorDescription: "Simulator \(simulatorUDID) is not booted. Current state: \(stateDescription)."
-            )
-        }
-        logger.info().log("Simulator state verified: booted")
+        let simulator = try SimulatorSession.bootedSimulator(udid: simulatorUDID, logger: logger)
+        logger.info().log("Simulator obtained: \(simulator.udid) (\(simulator.name)), state verified: booted")
 
         let bootIdentity = try HIDBroker.currentBootIdentity(simulatorUDID: simulatorUDID)
-        let dtuhidProcessIdentifier = FBProcessFetcher().subprocess(
-            of: bootIdentity.processIdentifier,
-            withName: "dtuhidd"
-        )
-        let isDTUHIDSelected = HIDBroker.isDTUHIDSelected(
-            processIdentifier: dtuhidProcessIdentifier
-        )
+        // The transport follows the CoreSimulator version, as in IDB; `dtuhidd` itself starts on
+        // demand when IDB connects, so its absence here is not a signal.
         try await HIDBroker.waitForHIDReadiness(
             bootIdentity: bootIdentity,
-            isDTUHIDSelected: isDTUHIDSelected,
+            isDTUHIDSelected: HIDBroker.usesDTUHID(),
             now: Date.init,
             sleep: { delay in try await Task.sleep(for: .seconds(delay)) }
         )
-        let hid = try await getOrCreateHIDConnection(for: simulator, logger: logger)
+        logger.info().log("Connecting to HID for simulator \(simulator.udid)...")
+        // IDB shares one connection per simulator and drops it when the simulator changes state.
+        let hid = try await simulator.hid.connect()
         let connectedBootIdentity = try HIDBroker.currentBootIdentity(simulatorUDID: simulatorUDID)
         guard HIDBroker.shouldReuseSession(
             sessionBootIdentity: bootIdentity,
             currentBootIdentity: connectedBootIdentity
         ) else {
-            hidConnections.removeValue(forKey: simulatorUDID)
+            await simulator.hid.disconnect()
             throw CLIError(
                 errorDescription: "Simulator \(simulatorUDID) restarted while AXe was connecting. Try the command again."
             )
         }
-        try await HIDBroker.waitForHIDReadiness(
-            bootIdentity: connectedBootIdentity,
-            isDTUHIDSelected: hid.transportType == .dtuhid,
-            now: Date.init,
-            sleep: { delay in try await Task.sleep(for: .seconds(delay)) }
-        )
         return Session(simulatorUDID: simulatorUDID, simulator: simulator, hid: hid)
     }
 
-    static func performHIDEvent(_ event: FBSimulatorHIDEvent, in session: Session, logger: AxeLogger) async throws {
+    static func performHIDEvent(_ event: SimulatorHIDEvent, in session: Session, logger: AxeLogger) async throws {
+        // Every touch path (tap, swipe, drag, slider, gesture, batch, and the hid-broker used by
+        // `axe touch`) passes through here. Touch coordinates are interface points of the active
+        // display; IDB routes them to that display and rotates them to the panel's native space.
         logger.info().log("Performing HID event...")
-        try await session.hid.send(event: event, logger: logger)
+        try await session.hid.send(event: event, logger: logger, on: .active)
         logger.info().log("HID event performed successfully.")
 
         if stabilizationDelayMs > 0 {
@@ -105,7 +70,7 @@ struct HIDInteractor {
         }
     }
 
-    static func performHIDEvent(_ event: FBSimulatorHIDEvent, for simulatorUDID: String, logger: AxeLogger) async throws {
+    static func performHIDEvent(_ event: SimulatorHIDEvent, for simulatorUDID: String, logger: AxeLogger) async throws {
         let session = try await makeSession(for: simulatorUDID, logger: logger)
         try await performHIDEvent(event, in: session, logger: logger)
     }
@@ -117,7 +82,7 @@ struct HIDInteractor {
         steps: Int,
         initialHold: TimeInterval,
         finalHold: TimeInterval
-    ) throws -> FBSimulatorHIDEvent {
+    ) throws -> SimulatorHIDEvent {
         guard duration >= 0 else {
             throw CLIError(errorDescription: "Drag duration must be non-negative.")
         }
@@ -130,7 +95,7 @@ struct HIDInteractor {
 
         let movePoints = try compositeDragMovePoints(from: start, to: end, steps: steps)
         let stepDelay = duration / Double(steps)
-        var events: [FBSimulatorHIDEvent] = [
+        var events: [SimulatorHIDEvent] = [
             .touch(direction: .down, x: start.x, y: start.y),
             .delay(initialHold)
         ]
@@ -208,8 +173,8 @@ struct HIDInteractor {
             try await Task.sleep(for: .seconds(preDelay))
         }
 
-        let touchDownEvent = FBSimulatorHIDEvent.touch(direction: .down, x: point.x, y: point.y)
-        let touchUpEvent = FBSimulatorHIDEvent.touch(direction: .up, x: point.x, y: point.y)
+        let touchDownEvent = SimulatorHIDEvent.touch(direction: .down, x: point.x, y: point.y)
+        let touchUpEvent = SimulatorHIDEvent.touch(direction: .up, x: point.x, y: point.y)
         var didTouchDown = false
 
         do {
@@ -231,25 +196,5 @@ struct HIDInteractor {
             logger.info().log("Post-delay: \(postDelay)s")
             try await Task.sleep(for: .seconds(postDelay))
         }
-    }
-
-    // Get or create a cached HID connection (matching CompanionLib's connectToHID behavior)
-    private static func getOrCreateHIDConnection(for simulator: FBSimulator, logger: AxeLogger) async throws -> FBSimulatorHID {
-        if let existingHID = hidConnections[simulator.udid] {
-            logger.info().log("Using existing HID connection for simulator \(simulator.udid)")
-            return existingHID
-        }
-
-        logger.info().log("Creating new HID connection for simulator \(simulator.udid)...")
-        let hid = try await simulator.connectToHID()
-
-        hidConnections[simulator.udid] = hid
-        logger.info().log("HID connection created and cached for simulator \(simulator.udid)")
-
-        return hid
-    }
-
-    static func clearHIDConnections() {
-        hidConnections.removeAll()
     }
 }
