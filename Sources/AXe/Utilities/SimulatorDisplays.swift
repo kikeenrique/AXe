@@ -332,9 +332,10 @@ enum DisplaySelection: Equatable {
     }
 }
 
-/// How `axe screenshot` captures the requested display.
-enum ScreenshotCapture: Equatable {
-    /// `FBSimulator.takeScreenshot` (the first framebuffer), the pre-foldable behaviour.
+/// How `axe screenshot` and `axe record-video` capture the requested display.
+enum DisplayCapture: Equatable {
+    /// The idb framebuffer (`FBSimulator.takeScreenshot`), the pre-foldable behaviour. On a
+    /// foldable it is always the inner display.
     case framebuffer
     /// simctl with a caller-supplied `--display` value that was not validated against devicectl.
     case unvalidatedDisplay(String)
@@ -350,18 +351,13 @@ enum ScreenshotCapture: Equatable {
         selection: DisplaySelection,
         state: SimulatorDisplayState?,
         isFoldableWithProbeDisabled: Bool = false
-    ) throws -> ScreenshotCapture {
+    ) throws -> DisplayCapture {
         guard let state else {
             switch selection {
             case .auto:
                 return .framebuffer
             case .cover, .inner:
-                if isFoldableWithProbeDisabled {
-                    throw CLIError(
-                        errorDescription: "--display cover and --display inner need display detection, which \(DisplayProbePolicy.environmentKey)=never disables. Unset it, or pass a display ID or name."
-                    )
-                }
-                throw CLIError(errorDescription: "--display cover and --display inner require a foldable simulator.")
+                throw coverInnerWithoutStateError(isFoldableWithProbeDisabled: isFoldableWithProbeDisabled)
             case .id(let identifier):
                 return .unvalidatedDisplay(String(identifier))
             case .name(let name):
@@ -372,6 +368,75 @@ enum ScreenshotCapture: Equatable {
             return .framebuffer
         }
         return .display(try selection.resolve(in: state))
+    }
+
+    /// Warning for an explicitly selected display that is not showing UI; `nil` for `auto` (which
+    /// waits for the backlight instead) and for an active, lit display.
+    static func inactiveDisplayWarning(for display: SimulatorDisplay, selection: DisplaySelection) -> String? {
+        guard selection != .auto else { return nil }
+        let reason: String
+        if display.active == false {
+            reason = "is not active"
+        } else if display.isBacklightOff {
+            reason = "has its backlight off"
+        } else {
+            return nil
+        }
+        return "Warning: display \(display.displayId) (\(display.name)) \(reason); the capture may be black."
+    }
+
+    /// Error for `--display cover|inner` when no display state is available.
+    static func coverInnerWithoutStateError(isFoldableWithProbeDisabled: Bool) -> CLIError {
+        if isFoldableWithProbeDisabled {
+            return CLIError(
+                errorDescription: "--display cover and --display inner need display detection, which \(DisplayProbePolicy.environmentKey)=never disables. Unset it, or pass a display ID or name."
+            )
+        }
+        return CLIError(errorDescription: "--display cover and --display inner require a foldable simulator.")
+    }
+}
+
+/// Which displays `axe stream-video` can stream.
+///
+/// The stream reads the idb framebuffer, which cannot select a display: on a foldable it is always
+/// the inner display, whichever display is active.
+enum StreamCapture {
+    /// Throws unless `selection` names the display the idb framebuffer shows.
+    ///
+    /// - Parameters:
+    ///   - state: devicectl state, or `nil` when the display probe does not apply.
+    ///   - isFoldableWithProbeDisabled: the simulator is foldable but `AXE_DISPLAY_PROBE=never`.
+    static func validate(
+        selection: DisplaySelection,
+        state: SimulatorDisplayState?,
+        isFoldableWithProbeDisabled: Bool = false
+    ) throws {
+        guard let state else {
+            switch selection {
+            case .auto:
+                return
+            case .cover, .inner:
+                throw DisplayCapture.coverInnerWithoutStateError(isFoldableWithProbeDisabled: isFoldableWithProbeDisabled)
+            case .id, .name:
+                throw CLIError(
+                    errorDescription: "stream-video cannot check display '\(selection.defaultValueDescription)' without display detection; it streams the simulator's default framebuffer. Omit --display, or set \(DisplayProbePolicy.environmentKey)=always."
+                )
+            }
+        }
+        let framebufferDisplay = state.isMultiDisplay ? state.innerDisplay : state.displays.first
+        if selection == .auto {
+            guard state.isMultiDisplay else { return }
+            throw CLIError(
+                errorDescription: "stream-video streams the inner display's framebuffer only and cannot follow the active display of a foldable simulator. Pass --display inner to stream the inner display, or use `axe record-video --display` or `axe screenshot --display` for the cover display."
+            )
+        }
+        let display = try selection.resolve(in: state)
+        guard let framebufferDisplay, display.displayId == framebufferDisplay.displayId else {
+            let streamable = framebufferDisplay.map { "display \($0.displayId) (\($0.name))" } ?? "the default framebuffer"
+            throw CLIError(
+                errorDescription: "stream-video can stream only \(streamable), the inner display's framebuffer, not display \(display.displayId) (\(display.name)). Use `axe record-video --display \(display.displayId)` or `axe screenshot --display \(display.displayId)` instead."
+            )
+        }
     }
 }
 
@@ -581,17 +646,17 @@ enum SimulatorDisplays {
         )
     }
 
-    /// Resolves the display to capture for a screenshot.
+    /// Resolves the display to capture for a screenshot or a recording.
     ///
     /// Returns `nil` when the default framebuffer capture applies (single display, `auto`).
     /// Returns the simctl `--display` argument otherwise.
-    static func screenshotDisplayArgument(
+    static func captureDisplayArgument(
         selection: DisplaySelection,
         simulator: FBSimulator,
         logger: AxeLogger
     ) async throws -> String? {
         let state = try await state(for: simulator, logger: logger)
-        let capture = try ScreenshotCapture.resolve(
+        let capture = try DisplayCapture.resolve(
             selection: selection,
             state: state,
             isFoldableWithProbeDisabled: state == nil && policy == .never && isFoldable(simulator)
@@ -604,10 +669,26 @@ enum SimulatorDisplays {
         case .display(var display):
             if selection == .auto, display.isBacklightOff {
                 display = await waitForBacklight(of: display, simulator: simulator, logger: logger)
+            } else if let warning = DisplayCapture.inactiveDisplayWarning(for: display, selection: selection) {
+                print(warning, to: &standardError)
             }
             logger.info().log("Capturing display \(display.displayId) (\(display.name))")
             return String(display.displayId)
         }
+    }
+
+    /// Throws unless `stream-video` can stream the selected display (see `StreamCapture`).
+    static func validateStreamDisplay(
+        selection: DisplaySelection,
+        simulator: FBSimulator,
+        logger: AxeLogger
+    ) async throws {
+        let state = try await state(for: simulator, logger: logger)
+        try StreamCapture.validate(
+            selection: selection,
+            state: state,
+            isFoldableWithProbeDisabled: state == nil && policy == .never && isFoldable(simulator)
+        )
     }
 
     /// The active flag can lead the backlight after a fold; waits up to 2 s for the active panel to
@@ -631,7 +712,7 @@ enum SimulatorDisplays {
             }
         }
         if display.isBacklightOff {
-            print("Warning: display \(display.displayId) (\(display.name)) is active but its backlight is off; the screenshot may be black.", to: &standardError)
+            print("Warning: display \(display.displayId) (\(display.name)) is active but its backlight is off; the capture may be black.", to: &standardError)
         }
         return display
     }

@@ -284,7 +284,7 @@ struct DisplayStateCacheTests {
 }
 
 @Suite("Screenshot capture decision")
-struct ScreenshotCaptureTests {
+struct DisplayCaptureTests {
     @Test("A capture is kept after a runner failure only when simctl wrote a PNG")
     func pngDetection() throws {
         let directory = FileManager.default.temporaryDirectory
@@ -309,22 +309,22 @@ struct ScreenshotCaptureTests {
 
     @Test("Without display state, auto uses the framebuffer and IDs or names pass through")
     func noState() throws {
-        #expect(try ScreenshotCapture.resolve(selection: .auto, state: nil) == .framebuffer)
-        #expect(try ScreenshotCapture.resolve(selection: .id(3), state: nil) == .unvalidatedDisplay("3"))
-        #expect(try ScreenshotCapture.resolve(selection: .name("LCD-1"), state: nil) == .unvalidatedDisplay("LCD-1"))
+        #expect(try DisplayCapture.resolve(selection: .auto, state: nil) == .framebuffer)
+        #expect(try DisplayCapture.resolve(selection: .id(3), state: nil) == .unvalidatedDisplay("3"))
+        #expect(try DisplayCapture.resolve(selection: .name("LCD-1"), state: nil) == .unvalidatedDisplay("LCD-1"))
     }
 
     @Test("Without display state, cover and inner fail", arguments: [DisplaySelection.cover, .inner])
     func noStateCoverInner(selection: DisplaySelection) {
         #expect(throws: CLIError.self) {
-            try ScreenshotCapture.resolve(selection: selection, state: nil)
+            try DisplayCapture.resolve(selection: selection, state: nil)
         }
     }
 
     @Test("A foldable with the probe disabled names the override")
     func probeDisabledMessage() {
         do {
-            _ = try ScreenshotCapture.resolve(selection: .cover, state: nil, isFoldableWithProbeDisabled: true)
+            _ = try DisplayCapture.resolve(selection: .cover, state: nil, isFoldableWithProbeDisabled: true)
             Issue.record("Expected an error")
         } catch {
             #expect(error.localizedDescription.contains("AXE_DISPLAY_PROBE=never"))
@@ -335,13 +335,13 @@ struct ScreenshotCaptureTests {
     func singleDisplay() throws {
         let state = try fixtureState("single-display")
 
-        #expect(try ScreenshotCapture.resolve(selection: .auto, state: state) == .framebuffer)
-        guard case .display(let display) = try ScreenshotCapture.resolve(selection: .id(1), state: state) else {
+        #expect(try DisplayCapture.resolve(selection: .auto, state: state) == .framebuffer)
+        guard case .display(let display) = try DisplayCapture.resolve(selection: .id(1), state: state) else {
             Issue.record("Expected a resolved display")
             return
         }
         #expect(display.displayId == 1)
-        #expect(throws: CLIError.self) { try ScreenshotCapture.resolve(selection: .cover, state: state) }
+        #expect(throws: CLIError.self) { try DisplayCapture.resolve(selection: .cover, state: state) }
     }
 
     @Test(
@@ -355,7 +355,7 @@ struct ScreenshotCaptureTests {
         ]
     )
     func unfoldedFoldable(selection: DisplaySelection, expectedID: Int) throws {
-        let capture = try ScreenshotCapture.resolve(selection: selection, state: fixtureState("duo-unfolded"))
+        let capture = try DisplayCapture.resolve(selection: selection, state: fixtureState("duo-unfolded"))
 
         guard case .display(let display) = capture else {
             Issue.record("Expected a resolved display, got \(capture)")
@@ -366,7 +366,7 @@ struct ScreenshotCaptureTests {
 
     @Test("A folded foldable captures the cover for auto")
     func foldedFoldable() throws {
-        let capture = try ScreenshotCapture.resolve(selection: .auto, state: fixtureState("duo-folded"))
+        let capture = try DisplayCapture.resolve(selection: .auto, state: fixtureState("duo-folded"))
 
         #expect(capture == .display(try #require(try fixtureState("duo-folded").coverDisplay)))
     }

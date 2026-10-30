@@ -42,7 +42,7 @@ struct Screenshot: AsyncParsableCommand {
 
         let outputURL = try prepareOutputURL(simulator: targetSimulator)
 
-        if let displayArgument = try await SimulatorDisplays.screenshotDisplayArgument(
+        if let displayArgument = try await SimulatorDisplays.captureDisplayArgument(
             selection: display,
             simulator: targetSimulator,
             logger: logger

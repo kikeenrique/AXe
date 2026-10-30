@@ -257,9 +257,13 @@ axe screenshot --display 3 --output shot.png --udid <UDID>      # Display ID or 
 ```bash
 axe record-video --udid <UDID> --fps 15 --output recording.mp4
 axe record-video --udid <UDID> --fps 10 --quality 60 --scale 0.5 --output low-bw.mp4
+axe record-video --udid <UDID> --output active.mp4                    # Foldable: the active display
+axe record-video --display cover --udid <UDID> --output cover.mp4     # Foldable: cover display
 ```
 
 Press `Ctrl+C` to stop recording. AXe finalises the MP4 before exiting.
+
+`--display` takes the same values as `screenshot` and defaults to `auto`. On foldable simulators, or with an explicit `--display`, AXe records with `xcrun simctl io recordVideo`: H.264 at the display's native size, one frame per display update, remuxed to MP4 (an output ending in `.mov` keeps simctl's QuickTime file). `--fps`, `--quality` and `--scale` other than 1.0 fail on that path. The display is fixed when recording starts; a fold mid-recording does not switch it. Other simulators keep the default capture path and options.
 
 ## Video streaming
 
@@ -267,9 +271,10 @@ Press `Ctrl+C` to stop recording. AXe finalises the MP4 before exiting.
 axe stream-video --udid <UDID> --fps 10 --format mjpeg > stream.mjpeg
 axe stream-video --udid <UDID> --fps 30 --format ffmpeg | \
   ffmpeg -f image2pipe -framerate 30 -i - -c:v libx264 -preset ultrafast output.mp4
+axe stream-video --display inner --udid <UDID> > inner.mjpeg          # Foldable: inner display only
 ```
 
-Foldable simulators: `record-video` and `stream-video` capture the inner display's framebuffer whatever the posture, so they are black or show the wrong display while folded. Use `axe screenshot` for the active display.
+Foldable simulators: `stream-video` reads the inner display's framebuffer whatever the posture, so it fails unless `--display inner` (or display 3, `LCD-1`) is passed; auto and the cover display fail with an error. Use `record-video --display` or `screenshot --display` for the cover display.
 
 ## Timing parameters
 
