@@ -37,7 +37,10 @@ struct HIDBrokerBootIdentity: Equatable {
 enum HIDBroker {
     static let inputDeliveryFailureDescription = "AXe could not deliver simulator input. The simulator may have restarted or disconnected. Confirm it is booted and try again."
     static let dtuhidMinimumBootUptime: TimeInterval = 10
-    private static let protocolVersion = 2
+    // 4: points are interface points of the active display, which IDB rotates itself. A broker
+    // built against the IDB fork would send them unrotated, so it must never receive them.
+    // (3 was used by unreleased development builds.)
+    private static let protocolVersion = 4
     static let maximumMessageBytes = 64 * 1024
     private static let idleTimeoutMilliseconds: Int32 = 60_000
     static let serverIOTimeoutMilliseconds: Int = 2_000
@@ -152,7 +155,7 @@ enum HIDBroker {
                     guard let x = primitive.x, let y = primitive.y else {
                         throw CLIError(errorDescription: "Touch primitive is missing coordinates.")
                     }
-                    let direction: FBSimulatorHIDDirection = primitive.kind == .down ? .down : .up
+                    let direction: SimulatorHIDDirection = primitive.kind == .down ? .down : .up
                     do {
                         try await HIDInteractor.performHIDEvent(
                             .touch(direction: direction, x: x, y: y),
@@ -186,7 +189,12 @@ enum HIDBroker {
     }
 
     static func endpointPath(simulatorUDID: String) throws -> String {
-        let developerDirectory = try FBXcodeDirectory.resolveDeveloperDirectory()
+        let developerDirectory = XcodeConfiguration.developerDirectory
+        guard !developerDirectory.isEmpty else {
+            throw CLIError(
+                errorDescription: "AXe could not find an active Xcode installation. Select Xcode with `xcode-select`, then try again."
+            )
+        }
         return try endpointPath(simulatorUDID: simulatorUDID, developerDirectory: developerDirectory)
     }
 

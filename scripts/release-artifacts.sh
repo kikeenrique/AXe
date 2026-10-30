@@ -6,13 +6,6 @@ set -euo pipefail
 # shellcheck source=./release-payload.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/release-payload.sh"
 
-EXPECTED_FRAMEWORKS=(
-  "FBControlCore"
-  "XCTestBootstrap"
-  "FBSimulatorControl"
-  "FBDeviceControl"
-)
-
 usage() {
   cat <<'EOF'
 Usage:
@@ -48,10 +41,14 @@ verify_arch() {
   [[ "$arch_info" == *"$expected_arch"* ]] || fail "Missing architecture '$expected_arch' in $binary_path"
 }
 
+# The simulator helper keeps the signature it was built with: it runs inside the simulator and
+# the Homebrew post_install never re-signs it, so stripping it would leave it unsigned.
 strip_signatures() {
   local stage_dir="$1"
+  local bridge_path="$stage_dir/$RELEASE_SIMULATOR_BRIDGE"
 
   while IFS= read -r -d '' file_path; do
+    [[ "$file_path" != "$bridge_path" ]] || continue
     if file "$file_path" | grep -q "Mach-O"; then
       codesign --remove-signature "$file_path" 2>/dev/null || true
     fi
@@ -59,7 +56,7 @@ strip_signatures() {
 
   while IFS= read -r -d '' bundle_path; do
     codesign --remove-signature "$bundle_path" 2>/dev/null || true
-  done < <(find "$stage_dir" \( -type d -name "*.framework" -o -type d -name "*.bundle" \) -print0)
+  done < <(find "$stage_dir" -type d -name "*.bundle" -print0)
 }
 
 extract_stage() {
@@ -104,30 +101,24 @@ stage_build_output() {
 
 verify_stage() {
   local stage_dir="$1"
-  local framework_name
-  local framework_path
-  local framework_binary
+  local bridge_path="$stage_dir/$RELEASE_SIMULATOR_BRIDGE"
 
   [[ -d "$stage_dir" ]] || fail "Stage directory not found: $stage_dir"
   [[ -x "$stage_dir/axe" ]] || fail "Stage is missing executable axe"
-  [[ -d "$stage_dir/Frameworks" ]] || fail "Stage is missing Frameworks directory"
   [[ -d "$stage_dir/AXe_AXe.bundle" ]] || fail "Stage is missing AXe_AXe.bundle"
+  [[ ! -e "$stage_dir/Frameworks" ]] || fail "Stage has a Frameworks directory; IDB is linked statically"
+  [[ -x "$bridge_path" ]] || fail "Stage is missing executable $RELEASE_SIMULATOR_BRIDGE"
 
   verify_arch "$stage_dir/axe" "arm64"
-  verify_arch "$stage_dir/axe" "x86_64"
-
-  for framework_name in "${EXPECTED_FRAMEWORKS[@]}"; do
-    framework_path="$stage_dir/Frameworks/${framework_name}.framework"
-    [[ -d "$framework_path" ]] || fail "Missing framework in staged payload: ${framework_name}.framework"
-    framework_binary="$(resolve_framework_binary "$framework_path" "$framework_name" || true)"
-    [[ -n "$framework_binary" ]] || fail "Could not locate binary for framework ${framework_name}"
-    verify_arch "$framework_binary" "arm64"
-    verify_arch "$framework_binary" "x86_64"
-  done
+  verify_arch "$bridge_path" "arm64"
+  # Every archive (including the unsigned Homebrew one) must carry the helper with its build
+  # signature intact.
+  codesign --verify --strict "$bridge_path" >/dev/null 2>&1 \
+    || fail "$RELEASE_SIMULATOR_BRIDGE signature does not verify; it must never be stripped or re-signed"
 
   local appledouble_files
   appledouble_files="$(find "$stage_dir" -type f -name "._*" | head -5)"
-  [[ -z "$appledouble_files" ]] || fail "AppleDouble metadata files in staged payload (break framework bundle seals): ${appledouble_files}"
+  [[ -z "$appledouble_files" ]] || fail "AppleDouble metadata files in staged payload: ${appledouble_files}"
 
   echo "✅ Verified staged payload contract and architectures"
 }
@@ -164,23 +155,18 @@ smoke_test_stage() {
   echo "✅ Smoke-tested staged payload"
 }
 
-# The Homebrew archive is unsigned by design (create-homebrew-archive strips every
+# The Homebrew archive's axe is unsigned by design (create-homebrew-archive strips its
 # signature) and the formula's post_install re-signs it ad hoc on install. Running it
-# raw fails on newer macOS, where dyld refuses to load the unsigned frameworks. Mirror
-# post_install on the extracted copy only: frameworks first, then axe, same flags.
+# raw fails on Apple silicon, which refuses unsigned code. Mirror post_install on the
+# extracted copy only: axe alone, same flags; the simulator helper is never re-signed.
 # Archives whose axe already verifies (the universal archive) are left untouched.
 adhoc_sign_unsigned_stage() {
   local stage_dir="$1"
-  local framework_path
 
   if codesign --verify --strict "$stage_dir/axe" >/dev/null 2>&1; then
     return 0
   fi
 
-  for framework_path in "$stage_dir"/Frameworks/*.framework; do
-    [[ -d "$framework_path" ]] || continue
-    codesign --force --sign - --timestamp=none "$framework_path"
-  done
   codesign --force --sign - --timestamp=none "$stage_dir/axe"
   echo "Archive is unsigned; ad-hoc signed the extracted copy for the smoke test"
 }

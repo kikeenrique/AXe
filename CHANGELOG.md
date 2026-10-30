@@ -7,9 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Added a one-time recovery for an unresponsive accessibility service: when a read finds no frontmost application, gets no answer, or returns an empty application element, AXe restarts the simulator's `com.apple.CoreSimulator.bridge` (`launchctl kickstart -k`), prints a warning, and retries once. A command (or a whole `batch`) restarts a simulator's bridge at most once; if the restart fails, AXe warns and keeps the original result. Set `AXE_AX_RECOVERY=never` to turn it off.
+
+### Changed
+
+- Changed AXe to build on upstream IDB v1.7.7 instead of a fork, linked statically: the release payload no longer contains `Frameworks/`, and ships the IDB simulator helper in `Resources/` instead. AXe now requires macOS 15 or later on Apple silicon; Intel Macs are no longer supported.
+- Changed touch delivery to send interface points of the active display and let IDB route and rotate them. Whenever the simulator reports a usable display (an identified display on iOS 27 runtimes, or the single display of the legacy report that Xcode 27 gets from an iOS 26 runtime), IDB rotates the points itself and AXe no longer applies its own rotation for a rotated simulator; only runtimes with no usable display report keep AXe's rotation mapping. The `axe touch` hid-broker protocol version is now 4, so an older broker is never reused.
+- Changed `axe button apple-pay` to send two side-button presses 0.15 s apart on the DTUHID input transport, which has no Apple Pay button; with `--duration` each press holds for half of it. AXe predicts the transport from the loaded CoreSimulator version (1155.4 or later uses DTUHID), as IDB chooses it, rather than from a running `dtuhidd`, which starts on demand; if IDB still refuses the Apple Pay event, AXe sends the two side-button presses instead, in `batch` too. Indigo simulators keep the Apple Pay button event.
+- Changed `axe record-video` to record with IDB's H.264 encoder at a constant frame rate instead of encoding polled screenshots; `--quality` sets the encoder's quality target, and progress is printed once a second instead of as frame counts. A recording that produces no frame within 5 seconds now fails at once instead of when it is stopped.
+- Changed simulator lookup to IDB's CoreSimulator service, which uses the Xcode selected with `xcode-select` and ignores `DEVELOPER_DIR`; AXe's `xcrun` calls still honour `DEVELOPER_DIR`. Development builds find IDB's accessibility helper in the checkout's `build_products/idb/bridge`; `AXE_IDB_BRIDGE_DIR` overrides the location and fails with an error when the directory does not contain the helper.
+- Changed `axe batch` steps whose input is interrupted by a display change (for example a rotation during the step): IDB stops the step instead of sending the rest of its events with stale coordinates, and the step fails with a message naming the step and the cause.
+- Changed `describe-ui` to report each element's accessibility `traits` (for example `Button`, `StaticText`, `Header`) instead of an always-empty `traits` array. IDB's accessibility backend returns them on Xcode 27.2; the former serializer emptied the hierarchy when traits were requested. Elements without traits keep an empty array.
+
 ### Fixed
 
 - Fixed the release smoke test failing on macOS runners that refuse unsigned frameworks: it now ad-hoc signs the extracted copy of the unsigned Homebrew archive before running it.
+- Fixed one-shot touch commands (`tap`, `swipe`, `drag`, `gesture`, and the first touch of a `batch`) on Xcode 27 simulators silently losing the touch. The simulator's `dtuhidd` needs about 0.2 s to set up input services for a new connection and AXe disconnected before that; IDB now confirms the session is live before the first event and waits for each send to be acknowledged. Previously only `--tap-style physical` was reliable.
+- Fixed AXe errors that are wrapped in another message, such as `axe batch` step failures, showing a generic system message instead of the underlying AXe error.
+
+### Removed
+
+- Removed the testmanagerd restart that AXe ran after an accessibility channel disconnect; IDB's accessibility backend does not use testmanagerd.
 
 ## [v1.8.0] - 2026-07-20
 

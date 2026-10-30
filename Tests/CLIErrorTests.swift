@@ -11,6 +11,14 @@ struct CLIErrorTests {
         #expect(String(describing: error) == "Simulator not found.")
     }
 
+    @Test("localizedDescription is the CLI message")
+    func localizedDescriptionIsMessage() {
+        let error: Error = CLIError(errorDescription: "Simulator not found.")
+
+        #expect(error.localizedDescription == "Simulator not found.")
+        #expect((error as? LocalizedError)?.errorDescription == "Simulator not found.")
+    }
+
     @Test("AXe runtime error types provide user-facing descriptions")
     func axeRuntimeErrorsAreUserFacing() {
         #expect(

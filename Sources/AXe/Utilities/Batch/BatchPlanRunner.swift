@@ -7,11 +7,11 @@ struct BatchPlanRunner {
     let logger: AxeLogger
 
     func run(_ plan: BatchPlan) async throws {
-        var pendingMergeable: [FBSimulatorHIDEvent] = []
+        var pendingMergeable: [SimulatorHIDEvent] = []
 
         func flushPending() async throws {
             guard !pendingMergeable.isEmpty else { return }
-            let event = pendingMergeable.count == 1 ? pendingMergeable[0] : FBSimulatorHIDEvent.composite(pendingMergeable)
+            let event = pendingMergeable.count == 1 ? pendingMergeable[0] : SimulatorHIDEvent.composite(pendingMergeable)
             try await HIDInteractor.performHIDEvent(event, in: session, logger: logger)
             pendingMergeable.removeAll(keepingCapacity: true)
         }
@@ -39,6 +39,9 @@ struct BatchPlanRunner {
                     in: session,
                     logger: logger
                 )
+            case .buttonPress(let button, let duration):
+                try await flushPending()
+                try await button.perform(duration: duration, in: session, logger: logger)
             }
         }
 

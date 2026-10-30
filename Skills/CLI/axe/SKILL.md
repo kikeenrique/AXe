@@ -33,6 +33,7 @@ axe screenshot --udid <UDID> --output screenshot.png
 
 Most HID commands (`tap`, `swipe`, `drag`, `type`, `key`, etc.) are fire-and-forget — AXe confirms the event was dispatched to the simulator but cannot verify the app actually processed it. A tap may land before a view is interactive, or during a transition. `slider` is the exception: it performs one selector-resolved low-level HID drag, re-reads the matched slider AXValue, and fails if the observed 0-100 value is outside tolerance. iOS slider controls quantize values to their rendered track resolution, so AXe does not retry correction gestures to chase unreachable decimals. This means:
 - Always verify outcomes separately with `describe-ui` or `screenshot` when app behavior matters beyond the direct command result.
+- When the simulator's accessibility service stops answering (no frontmost application, or an empty application element), AXe restarts the simulator's `com.apple.CoreSimulator.bridge` once, prints a warning on stderr, and retries; a command or batch does this at most once per simulator, and later failures are reported as they are. `AXE_AX_RECOVERY=never` turns this off.
 - Use `--wait-timeout` in batch to wait for tap elements to appear, and `sleep` steps or `--pre-delay` / `--post-delay` to allow animations to settle.
 
 ## Step 4: Apply timing and input best practices

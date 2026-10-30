@@ -12,10 +12,10 @@ extension UserFacingError {
 }
 
 struct CLIError: LocalizedError, UserFacingError {
-    let errorDescription: String
+    let message: String
 
     init(errorDescription: String) {
-        self.errorDescription = errorDescription
+        self.message = errorDescription
     }
 
     static func simulatorNotFound(udid: String) -> CLIError {
@@ -24,7 +24,13 @@ struct CLIError: LocalizedError, UserFacingError {
         )
     }
 
+    // `LocalizedError` requires `String?`; a non-optional stored property would not satisfy it and
+    // `localizedDescription` would fall back to Foundation's generic text.
+    var errorDescription: String? {
+        message
+    }
+
     var userFacingDescription: String {
-        errorDescription
+        message
     }
 }

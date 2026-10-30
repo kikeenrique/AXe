@@ -1,5 +1,6 @@
 import Foundation
 import FBControlCore
+import FBSimulatorAX
 import FBSimulatorControl
 
 struct AccessibilityRecoveryDependencies {
@@ -12,11 +13,66 @@ struct AccessibilityRecoveryDependencies {
 
     let runProcess: ProcessRunner
     let wait: Waiter
+    /// Prints a warning line; stderr in live use.
+    let warn: @MainActor (String) -> Void
+    /// Simulators whose bridge was already restarted; shared by the whole process in live use.
+    let memory: AccessibilityRecoveryMemory
+
+    init(
+        runProcess: @escaping ProcessRunner,
+        wait: @escaping Waiter,
+        warn: @escaping @MainActor (String) -> Void = { _ in },
+        memory: AccessibilityRecoveryMemory = AccessibilityRecoveryMemory()
+    ) {
+        self.runProcess = runProcess
+        self.wait = wait
+        self.warn = warn
+        self.memory = memory
+    }
 
     static let live = AccessibilityRecoveryDependencies(
         runProcess: AccessibilityFetcher.runProcess,
-        wait: { duration in try await Task.sleep(for: duration) }
+        wait: { duration in try await Task.sleep(for: duration) },
+        warn: { message in print(message, to: &standardError) },
+        memory: .shared
     )
+}
+
+/// The simulators whose accessibility bridge a process has already restarted. A process restarts
+/// each simulator's bridge at most once, so a batch or a polling loop against a service that stays
+/// broken does not restart it on every read.
+final class AccessibilityRecoveryMemory: @unchecked Sendable {
+    static let shared = AccessibilityRecoveryMemory()
+
+    private let lock = NSLock()
+    private var recovered: Set<String> = []
+
+    /// Records a recovery of `simulatorUDID`; false when one was already recorded.
+    func beginRecovery(of simulatorUDID: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return recovered.insert(simulatorUDID).inserted
+    }
+}
+
+/// `AXE_AX_RECOVERY`: `never` turns off the accessibility bridge restart; anything else keeps it.
+enum AccessibilityRecoveryPolicy {
+    static let environmentKey = "AXE_AX_RECOVERY"
+
+    static func isEnabled(environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
+        environment[environmentKey]?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() != "never"
+    }
+}
+
+/// A frontmost tree that is only an empty application element (see
+/// `AccessibilityFetcher.isUnresponsiveTree`). Carries the tree so it can still be returned when
+/// recovery is off or does not help.
+struct UnresponsiveAccessibilityTree: Error, LocalizedError {
+    let data: Data
+
+    var errorDescription: String? {
+        "the frontmost application has no accessibility elements"
+    }
 }
 
 struct AccessibilityPoint: Equatable {
@@ -37,13 +93,8 @@ struct AccessibilityFetcher {
         logger: AxeLogger,
         recoveryDependencies: AccessibilityRecoveryDependencies = .live
     ) async throws -> Data {
-        let simulatorSet = try await getSimulatorSet(deviceSetPath: nil, logger: logger, reporter: EmptyEventReporter.shared)
-        
-        guard let target = simulatorSet.allSimulators.first(where: { $0.udid == simulatorUDID }) else {
-            throw CLIError.simulatorNotFound(udid: simulatorUDID)
-        }
-
-        return try await retryingAfterTestManagerRecovery(
+        let target = try SimulatorSession.requireSimulator(udid: simulatorUDID, logger: logger)
+        return try await fetchingWithRecovery(
             simulatorUDID: simulatorUDID,
             logger: logger,
             dependencies: recoveryDependencies
@@ -55,14 +106,47 @@ struct AccessibilityFetcher {
         }
     }
 
+    /// IDB's accessibility backend (CoreSimulator's translator through the guest bridge), routed to
+    /// the active display.
+    private static func automation(for target: Simulator) throws -> any UIAutomation {
+        try target.uiAutomation(backend: .accessibility, display: .active)
+    }
+
+    private static var requestOptions: AccessibilityRequestOptions {
+        AccessibilityRequestOptions(format: .nested, keys: accessibilityOutputKeys)
+    }
+
+    /// `retryingAfterAccessibilityRecovery` for a read that returns JSON: an empty frontmost tree
+    /// that recovery is off for, already used, or did not fix is returned as the simulator
+    /// reported it.
+    static func fetchingWithRecovery(
+        simulatorUDID: String,
+        logger: AxeLogger,
+        dependencies: AccessibilityRecoveryDependencies,
+        isEnabled: Bool = AccessibilityRecoveryPolicy.isEnabled(),
+        fetch: @MainActor () async throws -> Data
+    ) async throws -> Data {
+        do {
+            return try await retryingAfterAccessibilityRecovery(
+                simulatorUDID: simulatorUDID,
+                logger: logger,
+                dependencies: dependencies,
+                isEnabled: isEnabled,
+                operation: fetch
+            )
+        } catch let unresponsive as UnresponsiveAccessibilityTree {
+            return unresponsive.data
+        }
+    }
+
     private static func fetchAccessibilityInfoJSONData(
-        from target: FBSimulator,
+        from target: Simulator,
         at point: AccessibilityPoint
     ) async throws -> Data {
-        try await retryingTransientPointFallback(at: point) {
-            let accessibilityElement = try await target.accessibilityElement(at: point.cgPoint)
-            defer { accessibilityElement.close() }
-            return try serializedAccessibilityData(from: accessibilityElement)
+        let automation = try automation(for: target)
+        return try await retryingTransientPointFallback(at: point) {
+            let response = try await automation.describe(.point(point.cgPoint), options: requestOptions)
+            return try serializedAccessibilityData(from: response)
         }
     }
 
@@ -92,20 +176,13 @@ struct AccessibilityFetcher {
         return latestData
     }
 
-    private static func fetchFrontmostAccessibilityInfoJSONData(from target: FBSimulator) async throws -> Data {
+    private static func fetchFrontmostAccessibilityInfoJSONData(from target: Simulator) async throws -> Data {
+        let automation = try automation(for: target)
         var latestData: Data?
         for attempt in 0..<5 {
-            // IDB's former `accessibilityElements(withNestedFormat:)` API also serialized the
-            // frontmost application internally. This explicit handle API preserves that scope.
-            let accessibilityElement = try await target.accessibilityElementForFrontmostApplication()
-            let data: Data
-            do {
-                data = try serializedAccessibilityData(from: accessibilityElement)
-                accessibilityElement.close()
-            } catch {
-                accessibilityElement.close()
-                throw error
-            }
+            // The frontmost application's tree, as IDB's former nested serializer returned it.
+            let response = try await automation.describe(.frontmost, options: requestOptions)
+            let data = try serializedAccessibilityData(from: response)
             latestData = data
             if try containsAccessibilityDescendant(in: data) {
                 return data
@@ -117,61 +194,74 @@ struct AccessibilityFetcher {
         guard let latestData else {
             throw CLIError(errorDescription: "Accessibility hierarchy could not be serialized.")
         }
+        if isUnresponsiveTree(latestData) {
+            throw UnresponsiveAccessibilityTree(data: latestData)
+        }
         return latestData
     }
 
-    static func retryingAfterTestManagerRecovery<T>(
+    /// Runs `operation` and, when the simulator's accessibility service stops answering, restarts
+    /// the simulator's `com.apple.CoreSimulator.bridge` once and runs `operation` again.
+    ///
+    /// After some boots, and after an app is terminated and relaunched, the service names no
+    /// frontmost application or returns an empty application element for minutes; restarting the
+    /// bridge fixes it at once. The restart is announced on stderr. `AXE_AX_RECOVERY=never` turns
+    /// it off. A second failure is thrown as it is.
+    ///
+    /// The bridge of a simulator is restarted at most once per process (`dependencies.memory`);
+    /// later failures are thrown as they are. When the restart itself fails, a warning says so and
+    /// the original failure is thrown, so an empty tree is still returned by the caller.
+    static func retryingAfterAccessibilityRecovery<T>(
         simulatorUDID: String,
         logger: AxeLogger,
         dependencies: AccessibilityRecoveryDependencies,
+        isEnabled: Bool = AccessibilityRecoveryPolicy.isEnabled(),
         operation: @MainActor () async throws -> T
     ) async throws -> T {
         do {
             return try await operation()
         } catch {
-            guard shouldRecoverTestManagerDaemon(from: error) else {
+            guard isEnabled, needsAccessibilityRecovery(after: error) else {
                 throw error
             }
-            logger.info().log("Accessibility transport failed; restarting testmanagerd and retrying once")
-            try await recoverTestManagerDaemon(
-                simulatorUDID: simulatorUDID,
-                dependencies: dependencies
+            guard dependencies.memory.beginRecovery(of: simulatorUDID) else {
+                logger.info().log("Accessibility service unresponsive; the bridge was already restarted in this process, so not restarting it again")
+                throw error
+            }
+            dependencies.warn(
+                "Warning: the simulator's accessibility service is not answering (\(error.localizedDescription)); restarting com.apple.CoreSimulator.bridge and retrying once. Set \(AccessibilityRecoveryPolicy.environmentKey)=never to disable this."
             )
+            logger.info().log("Accessibility service unresponsive; restarting com.apple.CoreSimulator.bridge and retrying once")
+            do {
+                try await restartAccessibilityBridge(simulatorUDID: simulatorUDID, dependencies: dependencies)
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch let restartError {
+                dependencies.warn("Warning: restarting com.apple.CoreSimulator.bridge failed: \(restartError.localizedDescription)")
+                throw error
+            }
             return try await operation()
         }
     }
 
-    static func shouldRecoverTestManagerDaemon(from error: Error) -> Bool {
-        let errors = errorChain(from: error)
-        let details = errors.flatMap { error in
-            [
-                error.domain,
-                error.localizedDescription,
-                error.localizedFailureReason,
-                error.localizedRecoverySuggestion,
-                error.userInfo[NSDebugDescriptionErrorKey] as? String,
-            ].compactMap { $0?.lowercased() }
-        }
-        if details.contains(where: { normalizedErrorText($0) == "channel disconnected" }) {
+    /// True for the failures a bridge restart fixes: no frontmost application, a service that does
+    /// not answer, or an empty frontmost tree. Other errors, such as nothing at a point, are not.
+    /// (A marker query without a match also has no translation object; AXe sends none, and such a
+    /// miss is not a broken service, so it is not listed.)
+    static func needsAccessibilityRecovery(after error: Error) -> Bool {
+        if error is UnresponsiveAccessibilityTree {
             return true
         }
-        let identifiesDTX = details.contains(where: { $0.contains("dtx") })
-        let identifiesFileDescriptorExhaustion = errors.contains { error in
-            error.code == 24
-                || error.localizedDescription.localizedCaseInsensitiveContains("errno 24")
-                || error.localizedDescription.localizedCaseInsensitiveContains("too many open files")
+        guard let error = error as? AccessibilityError else { return false }
+        switch error {
+        case .noTranslationObject(.frontmost), .serviceNotAnswering:
+            return true
+        default:
+            return false
         }
-        return identifiesDTX && identifiesFileDescriptorExhaustion
     }
 
-    private static func normalizedErrorText(_ text: String) -> String {
-        text.lowercased()
-            .components(separatedBy: .whitespacesAndNewlines)
-            .filter { !$0.isEmpty }
-            .joined(separator: " ")
-    }
-
-    static func recoverTestManagerDaemon(
+    static func restartAccessibilityBridge(
         simulatorUDID: String,
         dependencies: AccessibilityRecoveryDependencies
     ) async throws {
@@ -182,30 +272,41 @@ struct AccessibilityFetcher {
             "launchctl",
             "kickstart",
             "-k",
-            "user/foreground/com.apple.testmanagerd",
+            "user/foreground/com.apple.CoreSimulator.bridge",
         ]
         let status = try await dependencies.runProcess(
             URL(fileURLWithPath: "/usr/bin/xcrun"),
             arguments,
-            3
+            // `simctl spawn` can take several seconds on a simulator that has just booted.
+            15
         )
         guard status == 0 else {
             throw CLIError(
-                errorDescription: "AXe could not restore accessibility automation for simulator \(simulatorUDID). Restart the simulator and try again."
+                errorDescription: "AXe could not restart the accessibility service of simulator \(simulatorUDID) (launchctl exited with \(status)). Restart the simulator and try again."
             )
         }
-        try await dependencies.wait(.milliseconds(250))
+        try await dependencies.wait(.seconds(1))
     }
 
-    private static func errorChain(from error: Error) -> [NSError] {
-        var errors: [NSError] = []
-        var current: NSError? = error as NSError
-        var visited: Set<ObjectIdentifier> = []
-        while let next = current, visited.insert(ObjectIdentifier(next)).inserted {
-            errors.append(next)
-            current = next.userInfo[NSUnderlyingErrorKey] as? NSError
+    /// True when every root of a frontmost tree is an empty application element: no children and
+    /// an all-zero frame. The accessibility service returns this while it is wedged.
+    static func isUnresponsiveTree(_ data: Data) -> Bool {
+        guard let object = try? JSONSerialization.jsonObject(with: data) else { return false }
+        let roots: [[String: Any]]
+        if let array = object as? [[String: Any]] {
+            roots = array
+        } else if let root = object as? [String: Any] {
+            roots = [root]
+        } else {
+            return false
         }
-        return errors
+        return !roots.isEmpty && roots.allSatisfy { root in
+            let children = root["children"] as? [Any] ?? []
+            guard children.isEmpty, let frame = root["frame"] as? [String: Any] else { return false }
+            return ["x", "y", "width", "height"].allSatisfy { key in
+                (frame[key] as? NSNumber)?.doubleValue == 0
+            }
+        }
     }
 
     static func runProcess(
@@ -231,7 +332,7 @@ struct AccessibilityFetcher {
         }
         if process.isRunning {
             terminateProcess(process)
-            throw CLIError(errorDescription: "AXe timed out while restoring accessibility automation.")
+            throw CLIError(errorDescription: "AXe timed out restarting the simulator's accessibility service. Wait for the simulator to finish booting and try again.")
         }
         process.waitUntilExit()
         return process.terminationStatus
@@ -251,14 +352,9 @@ struct AccessibilityFetcher {
         process.waitUntilExit()
     }
 
-    private static func serializedAccessibilityData(from accessibilityElement: FBAccessibilityElement) throws -> Data {
-        let response = try accessibilityElement.serialize(
-            with: FBAccessibilityRequestOptions(
-                nestedFormat: true,
-                keys: accessibilityRequestKeys
-            )
-        )
-        return try serializeAccessibilityInfo(addingCompatibilityDefaults(to: response.elements))
+    /// The legacy Foundation rendering keeps AXe's JSON keys and number formatting unchanged.
+    private static func serializedAccessibilityData(from response: AccessibilityElementsResponse) throws -> Data {
+        try serializeAccessibilityInfo(addingCompatibilityDefaults(to: response.elements.legacyFoundationObject))
     }
 
     static func containsAccessibilityDescendant(in data: Data) throws -> Bool {
@@ -368,6 +464,7 @@ struct AccessibilityFetcher {
         return try JSONSerialization.data(withJSONObject: accessibilityInfo, options: [.prettyPrinted])
     }
 
+    /// Adds an empty `traits` array to every element that has none, so the key is always present.
     static func addingCompatibilityDefaults(to accessibilityInfo: Any) -> Any {
         if let elements = accessibilityInfo as? [Any] {
             return elements.map(addingCompatibilityDefaults)
@@ -385,7 +482,9 @@ struct AccessibilityFetcher {
     }
 
     // This key set preserves AXe's legacy public JSON schema; update it only with explicit schema coverage.
-    static let accessibilityOutputKeys: Set<FBAXKeys> = [
+    // IDB's accessibility backend returns `traits` (the fork's serializer emptied the hierarchy when
+    // they were requested, so AXe used to print an empty placeholder).
+    static let accessibilityOutputKeys: Set<AXKeys> = [
         .label,
         .frame,
         .value,
@@ -403,9 +502,4 @@ struct AccessibilityFetcher {
         .pid,
         .traits,
     ]
-
-    // AXe's former IDB serializer did not return traits. Xcode 27's private nested serializer also
-    // returns an empty hierarchy when `.traits` is requested, so retain the existing public value
-    // as an empty compatibility placeholder after requesting the safe subset on every Xcode version.
-    static let accessibilityRequestKeys = accessibilityOutputKeys.subtracting([.traits])
 }

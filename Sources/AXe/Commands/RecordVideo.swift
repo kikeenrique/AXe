@@ -1,8 +1,9 @@
 import ArgumentParser
 import Foundation
 import FBSimulatorControl
+import FBSimulatorVideo
+import FBVideoCore
 @preconcurrency import FBControlCore
-import AVFoundation
 
 struct RecordVideo: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
@@ -49,14 +50,12 @@ struct RecordVideo: AsyncParsableCommand {
             throw CLIError(errorDescription: "Simulator UDID cannot be empty. Use --udid to specify a simulator.")
         }
 
-        let simulatorSet = try await getSimulatorSet(deviceSetPath: nil, logger: logger, reporter: EmptyEventReporter.shared)
-        guard let targetSimulator = simulatorSet.allSimulators.first(where: { $0.udid == trimmedUDID }) else {
+        guard let targetSimulator = try await SimulatorSession.simulator(udid: trimmedUDID, logger: logger) else {
             throw CLIError(errorDescription: "Simulator with UDID \(trimmedUDID) not found.")
         }
 
         guard targetSimulator.state == .booted else {
-            let stateDescription = FBiOSTargetStateStringFromState(targetSimulator.state)
-            throw CLIError(errorDescription: "Simulator \(trimmedUDID) is not booted. Current state: \(stateDescription)")
+            throw CLIError(errorDescription: "Simulator \(trimmedUDID) is not booted. Current state: \(targetSimulator.stateString.rawValue)")
         }
 
         let outputURL = try prepareOutputURL()
@@ -87,84 +86,73 @@ struct RecordVideo: AsyncParsableCommand {
         }
     }
 
+    /// Records the active display with IDB's in-process H.264 recorder, which muxes an MP4 at a
+    /// constant frame rate. `quality` maps to the encoder's quality target (0-1).
     private func recordVideo(
-        simulator: FBSimulator,
+        simulator: Simulator,
         outputURL: URL,
         fps: Int,
         quality: Int,
         scale: Double,
         cancellationFlag: CancellationFlag
     ) async throws {
-        let initialFrameData = try await VideoFrameUtilities.captureScreenshotData(from: simulator)
-        guard let initialImage = VideoFrameUtilities.makeCGImage(from: initialFrameData) else {
-            throw CLIError(errorDescription: "Failed to decode simulator screenshot")
-        }
-
-        let dimensions = VideoFrameUtilities.computeDimensions(for: initialImage, scale: scale)
-        let recorder = try H264StreamRecorder(
-            outputURL: outputURL,
-            width: dimensions.width,
-            height: dimensions.height,
-            fps: fps,
-            quality: quality
+        let configuration = VideoStreamConfiguration(
+            format: .compressedVideo(withCodec: .h264, transport: .annexB),
+            framesPerSecond: fps,
+            rateControl: .quality(Double(quality) / 100.0),
+            scaleFactor: scale,
+            keyFrameRate: nil,
+            display: .active
         )
-        defer { recorder.invalidate() }
+        // `SimulatorVideo` directly rather than `simulator.videoRecording`, whose handle offers only
+        // `stop()`: `startedAt()` tells whether the encoder has muxed a frame, so a framebuffer or
+        // encoder failure is reported now instead of when the user stops the recording.
+        let framebuffer = try await simulator.framebuffer.connect(display: .active)
+        let recording = SimulatorVideo(
+            framebuffer: framebuffer,
+            configuration: configuration,
+            filePath: outputURL.path,
+            logger: simulator.logger
+        )
+        try await recording.startRecording()
 
-        let frameInterval = 1.0 / Double(fps)
-        var frameCount: Int64 = 1
-        var lastLogFrame: Int64 = 0
         let startTime = Date()
-        var lastPresentationTime = CMTime.zero
+        var lastLoggedSecond = 0
+        var hasFirstFrame = false
 
-        try recorder.append(image: initialImage, presentationTime: .zero)
-        let writerStartTime = Date()
-
-        while true {
-            if Task.isCancelled {
-                break
-            }
-            if await cancellationFlag.isCancelled() {
-                break
-            }
-
-            let frameStart = Date()
-
+        while !Task.isCancelled, await !cancellationFlag.isCancelled() {
             do {
-                let frameData = try await VideoFrameUtilities.captureScreenshotData(from: simulator)
-                guard let cgImage = VideoFrameUtilities.makeCGImage(from: frameData) else {
-                    FileHandle.standardError.write(Data("Unable to decode screenshot frame\n".utf8))
+                try await Task.sleep(nanoseconds: 100_000_000)
+            } catch {
+                break
+            }
+            let elapsed = Date().timeIntervalSince(startTime)
+            if !hasFirstFrame {
+                hasFirstFrame = await recording.startedAt() != nil
+                if !hasFirstFrame {
+                    guard elapsed < Self.firstFrameTimeout else {
+                        _ = try? await recording.stop()
+                        try? FileManager.default.removeItem(at: outputURL)
+                        throw CLIError(
+                            errorDescription: "The recording produced no frame within \(Int(Self.firstFrameTimeout)) seconds; the simulator framebuffer or the H.264 encoder did not start. No file was written."
+                        )
+                    }
                     continue
                 }
-
-                let now = Date()
-                var presentationTime = CMTime(seconds: now.timeIntervalSince(writerStartTime), preferredTimescale: 600)
-                if presentationTime <= lastPresentationTime {
-                    presentationTime = CMTimeAdd(lastPresentationTime, CMTime(value: 1, timescale: 600))
-                }
-
-                try recorder.append(image: cgImage, presentationTime: presentationTime)
-                lastPresentationTime = presentationTime
-                frameCount += 1
-
-                if frameCount - lastLogFrame >= Int64(fps) {
-                    lastLogFrame = frameCount
-                    let elapsed = Date().timeIntervalSince(startTime)
-                    let actualFPS = Double(frameCount) / max(elapsed, 0.0001)
-                    FileHandle.standardError.write(Data(String(format: "Captured %lld frames (%.1f FPS actual)\n", frameCount, actualFPS).utf8))
-                }
-            } catch {
-                FileHandle.standardError.write(Data("Error capturing frame: \(error.localizedDescription)\n".utf8))
             }
-
-            let elapsed = Date().timeIntervalSince(frameStart)
-            let sleepTime = frameInterval - elapsed
-            if sleepTime > 0 {
-                try await Task.sleep(nanoseconds: UInt64(sleepTime * 1_000_000_000))
+            let elapsedSeconds = Int(elapsed)
+            if elapsedSeconds > lastLoggedSecond {
+                lastLoggedSecond = elapsedSeconds
+                FileHandle.standardError.write(Data("Recording... \(elapsedSeconds)s\n".utf8))
             }
         }
 
-        try await recorder.finish()
+        _ = try await recording.stop()
     }
+
+    /// How long the in-process recorder may take to mux its first frame before AXe reports failure.
+    /// The eager cadence pushes a frame per tick even while the screen is still.
+    static let firstFrameTimeout: TimeInterval = 5
 
     private func prepareOutputURL() throws -> URL {
         let fileManager = FileManager.default

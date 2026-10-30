@@ -70,22 +70,22 @@ struct KeySequence: AsyncParsableCommand {
         logger.info().log("Delay between keys: \(keyDelay) seconds")
 
         // Create sequence of key events
-        var events: [FBSimulatorHIDEvent] = []
+        var events: [SimulatorHIDEvent] = []
         
         for (index, keycode) in parsedKeycodes.enumerated() {
             // Add key press event
-            let keyEvent = FBSimulatorHIDEvent.shortKeyPress(UInt32(keycode))
+            let keyEvent = SimulatorHIDEvent.shortKeyPress(UInt32(keycode))
             events.append(keyEvent)
             
             // Add delay between keys (except after the last key)
             if index < parsedKeycodes.count - 1 && keyDelay > 0 {
-                let delayEvent = FBSimulatorHIDEvent.delay(keyDelay)
+                let delayEvent = SimulatorHIDEvent.delay(keyDelay)
                 events.append(delayEvent)
             }
         }
         
         // Create composite event
-        let sequenceEvent = FBSimulatorHIDEvent.composite(events)
+        let sequenceEvent = SimulatorHIDEvent.composite(events)
         
         // Perform the key sequence event
         try await HIDInteractor

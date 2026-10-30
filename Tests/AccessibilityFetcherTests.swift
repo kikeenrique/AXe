@@ -1,5 +1,6 @@
 import Foundation
 import FBControlCore
+import enum FBSimulatorAX.AccessibilityError
 import Testing
 @testable import AXe
 
@@ -49,11 +50,6 @@ struct AccessibilityFetcherTests {
             .pid,
             .traits,
         ])
-        #expect(!AccessibilityFetcher.accessibilityRequestKeys.contains(.traits))
-        #expect(
-            AccessibilityFetcher.accessibilityRequestKeys.union([.traits])
-                == AccessibilityFetcher.accessibilityOutputKeys
-        )
     }
 
     @Test("Defaults unavailable traits recursively without changing non-element dictionaries")
@@ -271,8 +267,8 @@ struct AccessibilityFetcherTests {
         }
     }
 
-    @Test("Restarts the canonical testmanagerd service with direct simctl arguments")
-    func restartsCanonicalTestManagerService() async throws {
+    @Test("Restarts the simulator's CoreSimulator bridge with direct simctl arguments")
+    func restartsAccessibilityBridge() async throws {
         var executableURL: URL?
         var arguments: [String] = []
         var timeout: TimeInterval?
@@ -287,7 +283,7 @@ struct AccessibilityFetcherTests {
             wait: { duration in waits.append(duration) }
         )
 
-        try await AccessibilityFetcher.recoverTestManagerDaemon(
+        try await AccessibilityFetcher.restartAccessibilityBridge(
             simulatorUDID: "TEST-UDID",
             dependencies: dependencies
         )
@@ -300,10 +296,10 @@ struct AccessibilityFetcherTests {
             "launchctl",
             "kickstart",
             "-k",
-            "user/foreground/com.apple.testmanagerd",
+            "user/foreground/com.apple.CoreSimulator.bridge",
         ])
-        #expect(timeout == 3)
-        #expect(waits == [.milliseconds(250)])
+        #expect(timeout == 15)
+        #expect(waits == [.seconds(1)])
     }
 
     @Test("Cancelling recovery process polling terminates promptly")
@@ -326,64 +322,74 @@ struct AccessibilityFetcherTests {
         #expect(startedAt.duration(to: .now) < .seconds(1))
     }
 
-    @Test("Classifies only confirmed accessibility channel failures as recoverable")
-    func classifiesRecoverableChannelFailures() {
-        let disconnected = NSError(
-            domain: "Accessibility",
-            code: 1,
-            userInfo: [NSLocalizedDescriptionKey: "Channel disconnected"]
-        )
-        let fileDescriptorExhaustion = NSError(
-            domain: "DTXConnectionServicesErrorDomain",
-            code: 24,
-            userInfo: nil
-        )
-        let unrelatedPOSIXError = NSError(domain: NSPOSIXErrorDomain, code: 24)
-        let unrelatedDTXError = NSError(domain: "DTXConnectionServicesErrorDomain", code: 7)
-        let nearMatch = NSError(
-            domain: "Accessibility",
-            code: 1,
-            userInfo: [NSLocalizedDescriptionKey: "Previous channel disconnected unexpectedly"]
-        )
-        let normalizedMatch = NSError(
-            domain: "Accessibility",
-            code: 1,
-            userInfo: [NSLocalizedDescriptionKey: "  CHANNEL\n  DISCONNECTED  "]
-        )
 
-        #expect(AccessibilityFetcher.shouldRecoverTestManagerDaemon(from: disconnected))
-        #expect(AccessibilityFetcher.shouldRecoverTestManagerDaemon(from: normalizedMatch))
-        #expect(AccessibilityFetcher.shouldRecoverTestManagerDaemon(from: fileDescriptorExhaustion))
-        #expect(!AccessibilityFetcher.shouldRecoverTestManagerDaemon(from: unrelatedPOSIXError))
-        #expect(!AccessibilityFetcher.shouldRecoverTestManagerDaemon(from: unrelatedDTXError))
-        #expect(!AccessibilityFetcher.shouldRecoverTestManagerDaemon(from: nearMatch))
+    @Test("Recovers only from an unanswering accessibility service")
+    func classifiesRecoverableFailures() {
+        #expect(AccessibilityFetcher.needsAccessibilityRecovery(after: AccessibilityError.noTranslationObject(.frontmost)))
+        #expect(AccessibilityFetcher.needsAccessibilityRecovery(after: AccessibilityError.serviceNotAnswering(.query(timeout: 5), elapsed: 5, behindAbandoned: 0)))
+        #expect(AccessibilityFetcher.needsAccessibilityRecovery(after: UnresponsiveAccessibilityTree(data: Data())))
+        #expect(!AccessibilityFetcher.needsAccessibilityRecovery(after: AccessibilityError.noTranslationObject(.point(CGPoint(x: 1, y: 2)))))
+        #expect(!AccessibilityFetcher.needsAccessibilityRecovery(after: AccessibilityError.springBoardNotRunning))
+        #expect(!AccessibilityFetcher.needsAccessibilityRecovery(after: NSError(domain: "Accessibility", code: 1, userInfo: [NSLocalizedDescriptionKey: "Channel disconnected"])))
     }
 
-    @Test("Recovers and reacquires the frontmost hierarchy once")
+    @Test("An empty application element is an unresponsive tree; a populated one is not")
+    func detectsUnresponsiveTree() throws {
+        let empty = try JSONSerialization.data(withJSONObject: [[
+            "type": "Application",
+            "frame": ["x": 0, "y": 0, "width": 0, "height": 0],
+            "children": [Any](),
+        ]])
+        let populated = try JSONSerialization.data(withJSONObject: [[
+            "type": "Application",
+            "frame": ["x": 0, "y": 0, "width": 402, "height": 874],
+            "children": [["type": "Button"]],
+        ]])
+        let sized = try JSONSerialization.data(withJSONObject: [[
+            "type": "Application",
+            "frame": ["x": 0, "y": 0, "width": 402, "height": 874],
+            "children": [Any](),
+        ]])
+
+        #expect(AccessibilityFetcher.isUnresponsiveTree(empty))
+        #expect(!AccessibilityFetcher.isUnresponsiveTree(populated))
+        #expect(!AccessibilityFetcher.isUnresponsiveTree(sized))
+        #expect(!AccessibilityFetcher.isUnresponsiveTree(Data("[]".utf8)))
+    }
+
+    @Test("AXE_AX_RECOVERY=never turns recovery off")
+    func recoveryPolicy() {
+        #expect(AccessibilityRecoveryPolicy.isEnabled(environment: [:]))
+        #expect(AccessibilityRecoveryPolicy.isEnabled(environment: ["AXE_AX_RECOVERY": "auto"]))
+        #expect(!AccessibilityRecoveryPolicy.isEnabled(environment: ["AXE_AX_RECOVERY": " Never "]))
+    }
+
+    private func countingDependencies(_ recoveries: @escaping () -> Void, warnings: @escaping (String) -> Void = { _ in }) -> AccessibilityRecoveryDependencies {
+        AccessibilityRecoveryDependencies(
+            runProcess: { _, _, _ in
+                recoveries()
+                return 0
+            },
+            wait: { _ in },
+            warn: warnings
+        )
+    }
+
+    @Test("Restarts the bridge, warns, and reads the frontmost hierarchy again once")
     func retriesFrontmostHierarchyOnce() async throws {
         var operationCount = 0
         var recoveryCount = 0
-        let dependencies = AccessibilityRecoveryDependencies(
-            runProcess: { _, _, _ in
-                recoveryCount += 1
-                return 0
-            },
-            wait: { _ in }
-        )
-        let disconnected = NSError(
-            domain: "Accessibility",
-            code: 1,
-            userInfo: [NSLocalizedDescriptionKey: "Channel disconnected"]
-        )
+        var warnings: [String] = []
 
-        let result = try await AccessibilityFetcher.retryingAfterTestManagerRecovery(
+        let result = try await AccessibilityFetcher.retryingAfterAccessibilityRecovery(
             simulatorUDID: "TEST-UDID",
             logger: AxeLogger(),
-            dependencies: dependencies
+            dependencies: countingDependencies({ recoveryCount += 1 }, warnings: { warnings.append($0) }),
+            isEnabled: true
         ) {
             operationCount += 1
             if operationCount == 1 {
-                throw disconnected
+                throw AccessibilityError.noTranslationObject(.frontmost)
             }
             return "reacquired"
         }
@@ -391,72 +397,173 @@ struct AccessibilityFetcherTests {
         #expect(result == "reacquired")
         #expect(operationCount == 2)
         #expect(recoveryCount == 1)
+        #expect(warnings.count == 1)
+        #expect(warnings.first?.contains("AXE_AX_RECOVERY=never") == true)
     }
 
-    @Test("Does not loop when the retry also disconnects")
+    @Test("Does not loop when the retry fails too")
     func boundsRecoveryToOneRetry() async {
         var operationCount = 0
         var recoveryCount = 0
-        let dependencies = AccessibilityRecoveryDependencies(
-            runProcess: { _, _, _ in
-                recoveryCount += 1
-                return 0
-            },
-            wait: { _ in }
-        )
-        let disconnected = NSError(
-            domain: "Accessibility",
-            code: 1,
-            userInfo: [NSLocalizedDescriptionKey: "Channel disconnected"]
-        )
 
         do {
-            _ = try await AccessibilityFetcher.retryingAfterTestManagerRecovery(
+            _ = try await AccessibilityFetcher.retryingAfterAccessibilityRecovery(
                 simulatorUDID: "TEST-UDID",
                 logger: AxeLogger(),
-                dependencies: dependencies
+                dependencies: countingDependencies { recoveryCount += 1 },
+                isEnabled: true
             ) {
                 operationCount += 1
-                throw disconnected
+                throw AccessibilityError.noTranslationObject(.frontmost)
             } as String
             Issue.record("Expected the retry to fail")
         } catch {
-            #expect(error.localizedDescription == "Channel disconnected")
+            #expect(error.localizedDescription == "The simulator's accessibility service named no frontmost application")
         }
 
         #expect(operationCount == 2)
         #expect(recoveryCount == 1)
     }
 
-    @Test("Preserves unrelated errors without recovery")
-    func preservesUnrelatedErrors() async {
+    @Test("Does nothing when disabled or for unrelated errors")
+    func preservesErrorsWithoutRecovery() async {
         var recoveryCount = 0
-        let dependencies = AccessibilityRecoveryDependencies(
-            runProcess: { _, _, _ in
-                recoveryCount += 1
-                return 0
-            },
-            wait: { _ in }
-        )
-        let unrelated = NSError(
-            domain: "Accessibility",
-            code: 99,
-            userInfo: [NSLocalizedDescriptionKey: "Unrelated failure"]
-        )
-
-        do {
-            _ = try await AccessibilityFetcher.retryingAfterTestManagerRecovery(
-                simulatorUDID: "TEST-UDID",
-                logger: AxeLogger(),
-                dependencies: dependencies
-            ) {
-                throw unrelated
-            } as String
-            Issue.record("Expected the operation to fail")
-        } catch {
-            #expect(error.localizedDescription == "Unrelated failure")
+        for (enabled, error) in [(false, AccessibilityError.noTranslationObject(.frontmost) as Error), (true, NSError(domain: "Accessibility", code: 99, userInfo: [NSLocalizedDescriptionKey: "Unrelated failure"]))] {
+            do {
+                _ = try await AccessibilityFetcher.retryingAfterAccessibilityRecovery(
+                    simulatorUDID: "TEST-UDID",
+                    logger: AxeLogger(),
+                    dependencies: countingDependencies { recoveryCount += 1 },
+                    isEnabled: enabled
+                ) {
+                    throw error
+                } as String
+                Issue.record("Expected the operation to fail")
+            } catch let thrown {
+                #expect(thrown.localizedDescription == error.localizedDescription)
+            }
         }
 
         #expect(recoveryCount == 0)
+    }
+
+    @Test("A failed bridge restart warns and keeps the original failure")
+    func restartFailureKeepsOriginalError() async {
+        var warnings: [String] = []
+        var operationCount = 0
+        let dependencies = AccessibilityRecoveryDependencies(
+            runProcess: { _, _, _ in 1 },
+            wait: { _ in },
+            warn: { warnings.append($0) }
+        )
+
+        do {
+            _ = try await AccessibilityFetcher.retryingAfterAccessibilityRecovery(
+                simulatorUDID: "TEST-UDID",
+                logger: AxeLogger(),
+                dependencies: dependencies,
+                isEnabled: true
+            ) {
+                operationCount += 1
+                throw AccessibilityError.noTranslationObject(.frontmost)
+            } as String
+            Issue.record("Expected the original failure")
+        } catch {
+            #expect(error.localizedDescription == "The simulator's accessibility service named no frontmost application")
+        }
+
+        #expect(operationCount == 1)
+        #expect(warnings.count == 2)
+        #expect(warnings.last?.contains("restarting com.apple.CoreSimulator.bridge failed") == true)
+    }
+
+    @Test("An empty tree is still returned when the bridge restart fails")
+    func restartFailureReturnsUnresponsiveTree() async throws {
+        let empty = Data(#"[{"type":"Application","frame":{"x":0,"y":0,"width":0,"height":0},"children":[]}]"#.utf8)
+        let dependencies = AccessibilityRecoveryDependencies(
+            runProcess: { _, _, _ in throw CLIError(errorDescription: "AXe timed out restarting the simulator's accessibility service.") },
+            wait: { _ in }
+        )
+
+        let data = try await AccessibilityFetcher.fetchingWithRecovery(
+            simulatorUDID: "TEST-UDID",
+            logger: AxeLogger(),
+            dependencies: dependencies,
+            isEnabled: true
+        ) {
+            throw UnresponsiveAccessibilityTree(data: empty)
+        }
+
+        #expect(data == empty)
+    }
+
+    @Test("An empty tree that recovery does not fix is returned as reported")
+    func unresponsiveTreeAfterRecovery() async throws {
+        let empty = Data(#"[{"type":"Application","frame":{"x":0,"y":0,"width":0,"height":0},"children":[]}]"#.utf8)
+        var recoveryCount = 0
+
+        let data = try await AccessibilityFetcher.fetchingWithRecovery(
+            simulatorUDID: "TEST-UDID",
+            logger: AxeLogger(),
+            dependencies: countingDependencies { recoveryCount += 1 },
+            isEnabled: true
+        ) {
+            throw UnresponsiveAccessibilityTree(data: empty)
+        }
+
+        #expect(data == empty)
+        #expect(recoveryCount == 1)
+    }
+
+    @Test("A process restarts a simulator's bridge at most once")
+    func recoversOncePerProcess() async {
+        var recoveryCount = 0
+        var operationCount = 0
+        // One memory, as `axe batch` shares across its steps.
+        let dependencies = countingDependencies { recoveryCount += 1 }
+
+        for _ in 0..<3 {
+            do {
+                _ = try await AccessibilityFetcher.retryingAfterAccessibilityRecovery(
+                    simulatorUDID: "TEST-UDID",
+                    logger: AxeLogger(),
+                    dependencies: dependencies,
+                    isEnabled: true
+                ) {
+                    operationCount += 1
+                    throw AccessibilityError.noTranslationObject(.frontmost)
+                } as String
+                Issue.record("Expected the operation to fail")
+            } catch {
+                #expect(error.localizedDescription == "The simulator's accessibility service named no frontmost application")
+            }
+        }
+
+        #expect(recoveryCount == 1)
+        // Two reads for the recovered attempt, then one plain read for each later one.
+        #expect(operationCount == 4)
+
+        // Another simulator still gets its own restart.
+        _ = try? await AccessibilityFetcher.retryingAfterAccessibilityRecovery(
+            simulatorUDID: "OTHER-UDID",
+            logger: AxeLogger(),
+            dependencies: dependencies,
+            isEnabled: true
+        ) {
+            throw AccessibilityError.noTranslationObject(.frontmost)
+        } as String
+        #expect(recoveryCount == 2)
+    }
+
+    @Test("A marker query without a match does not restart the bridge")
+    func markerMissIsNotRecovered() {
+        #expect(!AccessibilityFetcher.needsAccessibilityRecovery(
+            after: AccessibilityError.noTranslationObject(.marker(value: "Done", key: .label, depth: 1))
+        ))
+    }
+
+    @Test("describe-ui requests traits")
+    func requestsTraits() {
+        #expect(AccessibilityFetcher.accessibilityOutputKeys.contains(.traits))
     }
 }

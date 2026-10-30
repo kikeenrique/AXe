@@ -24,14 +24,12 @@ struct Screenshot: AsyncParsableCommand {
             throw CLIError(errorDescription: "Simulator UDID cannot be empty. Use --udid to specify a simulator.")
         }
 
-        let simulatorSet = try await getSimulatorSet(deviceSetPath: nil, logger: logger, reporter: EmptyEventReporter.shared)
-        guard let targetSimulator = simulatorSet.allSimulators.first(where: { $0.udid == trimmedUDID }) else {
+        guard let targetSimulator = try await SimulatorSession.simulator(udid: trimmedUDID, logger: logger) else {
             throw CLIError(errorDescription: "Simulator with UDID \(trimmedUDID) not found.")
         }
 
         guard targetSimulator.state == .booted else {
-            let stateDescription = FBiOSTargetStateStringFromState(targetSimulator.state)
-            throw CLIError(errorDescription: "Simulator \(trimmedUDID) is not booted. Current state: \(stateDescription)")
+            throw CLIError(errorDescription: "Simulator \(trimmedUDID) is not booted. Current state: \(targetSimulator.stateString.rawValue)")
         }
 
         let outputURL = try prepareOutputURL(simulator: targetSimulator)
@@ -44,7 +42,7 @@ struct Screenshot: AsyncParsableCommand {
         print(outputURL.path)
     }
 
-    private func prepareOutputURL(simulator: FBSimulator) throws -> URL {
+    private func prepareOutputURL(simulator: Simulator) throws -> URL {
         let fileManager = FileManager.default
 
         let providedPath = output?.trimmingCharacters(in: .whitespacesAndNewlines)

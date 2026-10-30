@@ -155,7 +155,7 @@ struct Tap: AsyncParsableCommand {
                 logger: logger
             )
         case .simulator:
-            var events: [FBSimulatorHIDEvent] = []
+            var events: [SimulatorHIDEvent] = []
             if let preDelay, preDelay > 0 {
                 logger.info().log("Pre-delay: \(preDelay)s")
                 events.append(.delay(preDelay))
@@ -166,7 +166,7 @@ struct Tap: AsyncParsableCommand {
                 events.append(.delay(postDelay))
             }
 
-            let finalEvent = events.count == 1 ? events[0] : FBSimulatorHIDEvent.composite(events)
+            let finalEvent = events.count == 1 ? events[0] : SimulatorHIDEvent.composite(events)
             try await HIDInteractor.performHIDEvent(finalEvent, for: simulatorUDID, logger: logger)
         case .automatic:
             throw CLIError(errorDescription: "Unexpected tap style resolution.")

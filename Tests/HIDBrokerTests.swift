@@ -157,13 +157,23 @@ struct HIDBrokerTests {
             Issue.record("An invalid response should fail with an ambiguous outcome")
         } catch {
             let cliError = error as? CLIError
-            #expect(cliError?.errorDescription.contains("outcome is unknown") == true)
-            #expect(cliError?.errorDescription.contains("was not replayed") == true)
+            #expect(cliError?.message.contains("outcome is unknown") == true)
+            #expect(cliError?.message.contains("was not replayed") == true)
         }
 
         let request = try HIDBroker.readMessage(from: descriptors[1])
         #expect(descriptorRequests == 1)
         #expect(String(decoding: request, as: UTF8.self) == #"{"primitives":[]}"#)
+    }
+
+    @Test("The broker endpoint is versioned 4, so brokers built against the IDB fork never answer")
+    func endpointIsVersionFour() throws {
+        let endpoint = try HIDBroker.endpointPath(
+            simulatorUDID: "SIMULATOR_UDID",
+            developerDirectory: FileManager.default.temporaryDirectory.path
+        )
+
+        #expect(endpoint.hasSuffix("-v4.sock"))
     }
 
     @Test("Concurrent cold starts spawn one broker")
