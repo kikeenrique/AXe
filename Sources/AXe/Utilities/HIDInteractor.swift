@@ -30,6 +30,11 @@ struct HIDInteractor {
     static func makeSession(for simulatorUDID: String, logger: AxeLogger) async throws -> Session {
         let simulator = try SimulatorSession.bootedSimulator(udid: simulatorUDID, logger: logger)
         logger.info().log("Simulator obtained: \(simulator.udid) (\(simulator.name)), state verified: booted")
+        // Every HID path (keyboard, buttons, batch, the hid-broker) passes through here; refuse
+        // visionOS before waiting for or connecting to its HID service.
+        if simulator.platform == .visionOS {
+            throw CLIError(errorDescription: PlatformSupport.visionOSInputUnsupportedMessage)
+        }
         // Lets later display-state lookups by UDID skip another simulator lookup.
         SimulatorDisplays.recordDeviceType(for: simulator)
 

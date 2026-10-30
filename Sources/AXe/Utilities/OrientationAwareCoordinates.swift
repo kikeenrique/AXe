@@ -160,6 +160,9 @@ struct OrientationAwareCoordinates {
         orientationOverride: SimulatorOrientation? = nil,
         logger: AxeLogger
     ) async throws -> CoordinateMapping {
+        if let mapping = platformMapping(for: SimulatorSession.platform(udid: simulatorUDID, logger: logger), logger: logger) {
+            return mapping
+        }
         if let target = try await TouchTarget.nonMainTarget(forSimulatorUDID: simulatorUDID, logger: logger) {
             return displayMapping(for: target, logger: logger)
         }
@@ -183,6 +186,9 @@ struct OrientationAwareCoordinates {
         orientationOverride: SimulatorOrientation? = nil,
         logger: AxeLogger
     ) async throws -> CoordinateMapping {
+        if let mapping = platformMapping(for: SimulatorSession.platform(udid: simulatorUDID, logger: logger), logger: logger) {
+            return mapping
+        }
         // A non-main active display of a foldable maps through its TouchTarget: the AX application
         // frame is the cover's size, so it does not describe the inner panel. Non-foldables get nil
         // without a display read, and a failed simulator lookup is treated as nil.
@@ -300,6 +306,17 @@ struct OrientationAwareCoordinates {
         }
 
         throw CLIError(errorDescription: "Unable to determine rotated simulator orientation. AXe can read landscape coordinates only when the simulator reports the current interface or device orientation; the screenshot confirms the simulator is rotated, but neither was available.")
+    }
+
+    /// The mapping fixed by the platform, before any accessibility, orientation or screenshot probe:
+    /// passthrough (rotation 0, no letterbox) on watchOS, tvOS and visionOS, whose simulators are
+    /// not portrait-native phones. A visionOS window space is landscape-shaped and a watch face is
+    /// nearly square, so the iOS inference would take a landscape or letterbox branch for them.
+    /// `nil` on iOS (and unknown platforms), where detection runs.
+    static func platformMapping(for platform: SimulatorPlatform, logger: AxeLogger? = nil) -> CoordinateMapping? {
+        guard !platform.usesPhoneCoordinateModel else { return nil }
+        logger?.info().log("\(platform.displayName) simulator: passing coordinates through (rotation 0, no letterbox)")
+        return .passthrough
     }
 
     /// The mapping for a rotated single-display simulator: AXe's own rotation only when IDB sends
@@ -727,6 +744,10 @@ struct OrientationAwareCoordinates {
         if let override = orientationOverride {
             logger.info().log("Using explicit orientation override: \(override.rawValue)")
             return override
+        }
+
+        if platformMapping(for: SimulatorSession.platform(udid: simulatorUDID, logger: logger)) != nil {
+            return .portrait
         }
 
         let roots = try await AccessibilityFetcher.fetchAccessibilityElements(

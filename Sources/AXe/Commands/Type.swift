@@ -60,6 +60,7 @@ struct Type: AsyncParsableCommand {
         try await setup(logger: logger)
         
         try await performGlobalSetup(logger: logger)
+        try await PlatformSupport.check(.keyboard, simulatorUDID: simulatorUDID, logger: logger)
         
         // Determine input source and get text
         let inputText: String

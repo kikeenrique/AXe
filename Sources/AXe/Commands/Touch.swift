@@ -69,6 +69,7 @@ struct Touch: AsyncParsableCommand {
         try await setup(logger: logger)
         
         try await performGlobalSetup(logger: logger)
+        try await PlatformSupport.check(.touch, simulatorUDID: simulatorUDID, logger: logger)
 
         logger.info().log("Performing touch events at (\(pointX), \(pointY))")
 

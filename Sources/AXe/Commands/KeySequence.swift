@@ -62,6 +62,7 @@ struct KeySequence: AsyncParsableCommand {
         try await setup(logger: logger)
         
         try await performGlobalSetup(logger: logger)
+        try await PlatformSupport.check(.keyboard, simulatorUDID: simulatorUDID, logger: logger)
 
         let parsedKeycodes = try parseCommaSeparatedIntsStrict(keycodesString, fieldName: "keycodes")
         let keyDelay = delay ?? 0.1  // Default 100ms delay between keys

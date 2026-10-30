@@ -584,6 +584,8 @@ enum FoldableDevice {
     /// Runs `action`. Returns a warning when the device took the change but the interface did not follow.
     @discardableResult
     static func perform(_ action: DeviceStateAction, simulator: Simulator, logger: AxeLogger) async throws -> String? {
+        // watchOS, tvOS and visionOS report no orientation or hinge; refuse before Device Hub.
+        try PlatformSupport.requireIOS(command: action.isHingeAction ? "hinge" : "rotate", on: simulator.platform)
         defer { SimulatorDisplays.invalidateCachedState() }
         let capabilities = try await simulator.capabilities()
         if action.isHingeAction {

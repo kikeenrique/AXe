@@ -10,7 +10,8 @@ struct Batch: AsyncParsableCommand {
         Steps are executed in order.
 
         Supported step commands:
-          tap, swipe, gesture, touch, type, button, key, key-sequence, key-combo
+          tap, swipe, gesture, touch, type, button, key, key-sequence, key-combo,
+          remote (tvOS only)
 
         Device-state steps (barriers; later steps re-read display and accessibility state):
           hinge <set <degrees>|open|close|half> [--duration <s>] [--no-wait]

@@ -20,10 +20,15 @@ enum ElementResolutionError: LocalizedError, UserFacingError {
     case multipleMatches(count: Int, kind: String, value: String, hasUniqueIDs: Bool)
     case invalidFrame(reason: String)
     case multipleSwitchDescendants(count: Int, selectorDescription: String)
+    /// The frontmost tree is only a root without children on a platform whose app content the
+    /// accessibility service does not expose (watchOS, tvOS, visionOS), so no selector can match.
+    case emptyTree(kind: String, value: String, platform: SimulatorPlatform)
 
     var errorDescription: String? {
         let tip = AccessibilityTargetResolver.describeUITip
         switch self {
+        case .emptyTree(let kind, let value, let platform):
+            return "No accessibility element matched \(kind) '\(value)': the accessibility tree is empty on this \(platform.displayName) simulator (only a root element without children), so selectors (--id, --label, --value) cannot match. Use `axe describe-ui --point X,Y` to inspect the element at a point, or tap by coordinates with -x/-y."
         case .notFound(let kind, let value):
             return "No accessibility element matched \(kind) '\(value)'. \(tip)"
         case .multipleMatches(let count, let kind, let value, let hasUniqueIDs):
@@ -56,6 +61,26 @@ struct AccessibilityMatch {
 
 struct AccessibilityTargetResolver {
     static let describeUITip = "Make sure the app is on the expected screen, then run `axe describe-ui --udid <SIMULATOR_UDID>` and prefer --id when available."
+
+    /// True when every root has no children (or there are no roots).
+    static func isChildlessTree(_ roots: [AccessibilityElement]) -> Bool {
+        roots.allSatisfy { ($0.children ?? []).isEmpty }
+    }
+
+    /// Replaces a not-found error with `.emptyTree` when the tree is only childless roots on a
+    /// platform whose app content AXe cannot read; returns `error` unchanged otherwise.
+    static func platformAwareError(
+        _ error: ElementResolutionError,
+        roots: [AccessibilityElement],
+        platform: SimulatorPlatform
+    ) -> ElementResolutionError {
+        guard case .notFound(let kind, let value) = error,
+              !platform.usesPhoneCoordinateModel,
+              isChildlessTree(roots) else {
+            return error
+        }
+        return .emptyTree(kind: kind, value: value, platform: platform)
+    }
 
     private static let wideSwitchActivationWidthThreshold = 100.0
     private static let switchTrailingActivationInset = 31.0

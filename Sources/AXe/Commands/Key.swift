@@ -55,6 +55,7 @@ struct Key: AsyncParsableCommand {
         try await setup(logger: logger)
         
         try await performGlobalSetup(logger: logger)
+        try await PlatformSupport.check(.keyboard, simulatorUDID: simulatorUDID, logger: logger)
 
         logger.info().log("Pressing key with keycode: \(keycode)")
         if let duration = duration {

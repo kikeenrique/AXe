@@ -183,6 +183,7 @@ extension Hinge {
             try await performGlobalSetup(logger: logger)
 
             let simulator = try await FoldableDevice.bootedSimulator(udid: simulatorUDID, logger: logger)
+            try PlatformSupport.requireIOS(command: "hinge", on: simulator.platform)
             let angle = try await FoldableDevice.requireAngle(simulator: simulator, logger: logger)
             if json {
                 print(try await FoldableDevice.posture(simulator: simulator, hingeAngle: angle, logger: logger).jsonString())

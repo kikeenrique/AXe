@@ -13,7 +13,8 @@ struct Rotate: AsyncParsableCommand {
         device orientations until the active display reports the requested rotation, and
         restores the starting orientation when none matches. On other simulators AXe warns when
         the device took the orientation but the active display does not rotate, for example on
-        a home screen that stays portrait.
+        a home screen that stays portrait. iOS simulators only: watchOS, tvOS and visionOS
+        simulators are refused before Device Hub is contacted.
 
         Example:
           axe rotate landscape --udid SIMULATOR_UDID

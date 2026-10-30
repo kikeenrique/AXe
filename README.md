@@ -66,6 +66,24 @@ axe describe-ui --point 763,389 --udid "$UDID"   # element at an inner-display i
 axe rotate portrait --udid "$UDID"      # rotate the active display's interface
 ```
 
+## Platforms
+
+`axe list-simulators` ends each line with the simulator's platform (`Platform 'iOS'`, `watchOS`, `tvOS`, `visionOS` or `unknown`; iPad simulators report `iOS`, and `unknown` is a platform AXe does not recognise, handled like iOS). AXe is built for iOS; on the other platforms commands that cannot work fail before anything is sent, with a message saying why. Probed on Xcode 27.2 with watchOS 27.2 and visionOS 27.2 runtimes; tvOS is from code reading only.
+
+| Command | watchOS | tvOS | visionOS |
+|---|---|---|---|
+| `list-simulators`, `screenshot`, `record-video`, `stream-video`, `posture` | yes | yes (untested) | yes |
+| `tap -x -y`, `swipe`, `drag`, `touch`, `gesture` | yes (coordinates pass through; `gesture` presets fit the watch screen) | refused: use `axe remote` | refused |
+| `tap`/`slider` with `--id`, `--label`, `--value` | fails: the accessibility tree is only an empty root | refused | refused |
+| `describe-ui` | root element only; `--point` works | untested | partial skeleton |
+| `button` | `home` (Digital Crown press), `side-button`, `lock`, `siri` | `play-pause`, `volume-up`, `volume-down` | refused |
+| `remote up\|down\|left\|right\|select\|menu\|play-pause` | refused | yes | refused |
+| `type`, `key`, `key-sequence`, `key-combo` | sent, delivery unverified | expected to work (focus) | refused |
+| `rotate`, `hinge` | refused (iOS only) | refused | refused |
+| `batch` | as the single commands | as the single commands | refused |
+
+visionOS input is refused because IDB v1.7.7 drives only the touch digitizer service, which visionOS does not provide. Digital Crown rotation, the Siri Remote trackpad and visionOS pointer, gaze and hand input are not available.
+
 ## E2E development
 
 `make e2e` rebuilds the local IDB libraries (`scripts/build.sh libraries`), builds AXe, and runs the simulator tests with the Xcode selected by `DEVELOPER_DIR` or `xcode-select`. XcodeGen is required to generate the IDB projects. When Xcode 27 is selected, the runner starts Device Hub, chooses an available iOS 27 iPhone 17 Pro, and boots it with `simctl`.

@@ -80,6 +80,7 @@ struct Swipe: AsyncParsableCommand {
         try await setup(logger: logger)
         
         try await performGlobalSetup(logger: logger)
+        try await PlatformSupport.check(.touch, simulatorUDID: simulatorUDID, logger: logger)
 
         // Use default values if not provided
         let swipeDuration = duration ?? 1.0  // Default 1 second

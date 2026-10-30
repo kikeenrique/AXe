@@ -174,6 +174,7 @@ struct AccessibilityFetcher {
     ) async throws -> Data {
         try await fetchingWithRecovery(
             simulatorUDID: simulatorUDID,
+            platform: target.platform,
             logger: logger,
             dependencies: recoveryDependencies
         ) {
@@ -189,6 +190,7 @@ struct AccessibilityFetcher {
     /// reported it.
     static func fetchingWithRecovery(
         simulatorUDID: String,
+        platform: SimulatorPlatform = .iOS,
         logger: AxeLogger,
         dependencies: AccessibilityRecoveryDependencies,
         isEnabled: Bool = AccessibilityRecoveryPolicy.isEnabled(),
@@ -197,6 +199,7 @@ struct AccessibilityFetcher {
         do {
             return try await retryingAfterAccessibilityRecovery(
                 simulatorUDID: simulatorUDID,
+                platform: platform,
                 logger: logger,
                 dependencies: dependencies,
                 isEnabled: isEnabled,
@@ -269,7 +272,8 @@ struct AccessibilityFetcher {
     }
 
     /// Runs `operation` and, when the simulator's accessibility service stops answering, restarts
-    /// the simulator's `com.apple.CoreSimulator.bridge` once and runs `operation` again.
+    /// the simulator's `com.apple.CoreSimulator.bridge` once (in the launchd domain for `platform`,
+    /// see `accessibilityBridgeDomains(for:)`) and runs `operation` again.
     ///
     /// After some boots, and after an app is terminated and relaunched, the service names no
     /// frontmost application or returns an empty application element for minutes; restarting the
@@ -281,6 +285,7 @@ struct AccessibilityFetcher {
     /// the original failure is thrown, so an empty tree is still returned by the caller.
     static func retryingAfterAccessibilityRecovery<T>(
         simulatorUDID: String,
+        platform: SimulatorPlatform = .iOS,
         logger: AxeLogger,
         dependencies: AccessibilityRecoveryDependencies,
         isEnabled: Bool = AccessibilityRecoveryPolicy.isEnabled(),
@@ -301,7 +306,7 @@ struct AccessibilityFetcher {
             )
             logger.info().log("Accessibility service unresponsive; restarting com.apple.CoreSimulator.bridge and retrying once")
             do {
-                try await restartAccessibilityBridge(simulatorUDID: simulatorUDID, dependencies: dependencies)
+                try await restartAccessibilityBridge(simulatorUDID: simulatorUDID, platform: platform, dependencies: dependencies)
             } catch is CancellationError {
                 throw CancellationError()
             } catch let restartError {
@@ -329,31 +334,66 @@ struct AccessibilityFetcher {
         }
     }
 
+    static let accessibilityBridgeLabel = "com.apple.CoreSimulator.bridge"
+
+    /// The launchd domains that hold the accessibility bridge, in the order AXe tries them.
+    ///
+    /// Inspected with `simctl spawn <udid> launchctl print <domain>` on Xcode 27.2 runtimes: iOS
+    /// and visionOS run the bridge in `user/foreground`; watchOS has no `user/foreground` domain
+    /// ("Unrecognized target specifier") and runs it in `system`. tvOS is unverified (no runtime
+    /// was available), so both domains are tried.
+    static func accessibilityBridgeDomains(for platform: SimulatorPlatform) -> [String] {
+        switch platform {
+        case .iOS, .visionOS:
+            return ["user/foreground"]
+        case .watchOS:
+            return ["system"]
+        case .tvOS, .unknown:
+            return ["user/foreground", "system"]
+        }
+    }
+
     static func restartAccessibilityBridge(
         simulatorUDID: String,
+        platform: SimulatorPlatform = .iOS,
         dependencies: AccessibilityRecoveryDependencies
     ) async throws {
-        let arguments = [
-            "simctl",
-            "spawn",
-            simulatorUDID,
-            "launchctl",
-            "kickstart",
-            "-k",
-            "user/foreground/com.apple.CoreSimulator.bridge",
-        ]
-        let status = try await dependencies.runProcess(
-            URL(fileURLWithPath: "/usr/bin/xcrun"),
-            arguments,
-            // `simctl spawn` can take several seconds on a simulator that has just booted.
-            15
-        )
-        guard status == 0 else {
-            throw CLIError(
-                errorDescription: "AXe could not restart the accessibility service of simulator \(simulatorUDID) (launchctl exited with \(status)). Restart the simulator and try again."
-            )
+        // One entry per domain tried: "<domain>: exited with N" or "<domain>: <error>". A domain
+        // that fails or times out does not stop the next one from being tried.
+        var failures: [String] = []
+        for domain in accessibilityBridgeDomains(for: platform) {
+            let arguments = [
+                "simctl",
+                "spawn",
+                simulatorUDID,
+                "launchctl",
+                "kickstart",
+                "-k",
+                "\(domain)/\(accessibilityBridgeLabel)",
+            ]
+            let status: Int32
+            do {
+                status = try await dependencies.runProcess(
+                    URL(fileURLWithPath: "/usr/bin/xcrun"),
+                    arguments,
+                    // `simctl spawn` can take several seconds on a simulator that has just booted.
+                    15
+                )
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                failures.append("\(domain): \(error.localizedDescription)")
+                continue
+            }
+            if status == 0 {
+                try await dependencies.wait(.seconds(1))
+                return
+            }
+            failures.append("\(domain): launchctl exited with \(status)")
         }
-        try await dependencies.wait(.seconds(1))
+        throw CLIError(
+            errorDescription: "AXe could not restart the accessibility service of simulator \(simulatorUDID) (\(failures.joined(separator: "; "))). Restart the simulator and try again."
+        )
     }
 
     /// True when every root of a frontmost tree is an empty application element: no children and

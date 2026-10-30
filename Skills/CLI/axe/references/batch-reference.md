@@ -12,6 +12,7 @@ Use this reference when generating or reviewing `axe batch` commands.
 - `key`
 - `key-sequence`
 - `key-combo`
+- `remote <up|down|left|right|select|menu|play-pause> [--count N] [--delay ms]` (tvOS simulators)
 - `sleep <seconds>` (batch pseudo-step)
 - `hinge <set <degrees>|open|close|half> [--duration <s>] [--no-wait]` (foldable simulators)
 - `rotate <portrait|landscape|portrait-upside-down|landscape-flipped>`

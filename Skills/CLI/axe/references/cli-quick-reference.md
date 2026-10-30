@@ -8,7 +8,7 @@ Comprehensive reference for all AXe commands. Most simulator-interaction command
 axe list-simulators
 ```
 
-No `--udid` needed. Lists all available simulators with their UDIDs and boot state.
+No `--udid` needed. Lists all available simulators with their UDIDs, boot state, runtime and platform (each line ends with `| Platform 'iOS|watchOS|tvOS|visionOS|unknown'`). Off iOS, commands the platform cannot take are refused before anything is sent: tvOS refuses touch (use `remote`), visionOS refuses all input, and `rotate`/`hinge` are iOS only. On watchOS selector taps fail on an empty accessibility tree; use `-x/-y`.
 
 ## Tap
 
@@ -159,7 +159,22 @@ axe button lock --duration 3.0 --udid <UDID>    # Long press
 axe button side-button --udid <UDID>
 axe button siri --udid <UDID>
 axe button apple-pay --udid <UDID>
+axe button play-pause --udid <UDID>             # tvOS; also volume-up, volume-down
 ```
+
+Buttons by platform: iOS/iPadOS `apple-pay`, `home`, `lock`, `side-button`, `siri`; watchOS `home` (Digital Crown press), `side-button`, `lock`, `siri`; tvOS `play-pause`, `volume-up`, `volume-down`; visionOS none. Other buttons fail naming the platform's valid list.
+
+## Siri Remote (tvOS only)
+
+```bash
+axe remote up --udid <UDID>                     # up, down, left, right move focus
+axe remote right --count 3 --delay 200 --udid <UDID>   # 3 presses, 200 ms apart
+axe remote select --udid <UDID>                 # activate the focused item
+axe remote menu --udid <UDID>                   # back
+axe remote play-pause --udid <UDID>
+```
+
+`--count` is 1 to 100 (default 1); `--delay` is milliseconds between presses (default 150). Refused on other platforms.
 
 ## Batch (multi-step workflows)
 
