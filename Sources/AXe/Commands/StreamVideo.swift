@@ -33,6 +33,12 @@ struct StreamVideo: AsyncParsableCommand {
     @Option(help: "Scale factor (0.1-1.0, default: 1.0)")
     var scale: Double = 1.0
 
+    @Option(
+        name: .customLong("display"),
+        help: "Display to stream: auto, cover, inner, a display ID, or a display name. The stream follows the active display (the cover while a foldable is folded, the inner display while it is unfolded); naming an inactive display fails (use record-video or screenshot with --display for it)."
+    )
+    var display: DisplaySelection = .auto
+
     func validate() throws {
         guard fps >= 1 && fps <= 30 else {
             throw ValidationError("FPS must be between 1 and 30")
@@ -64,6 +70,8 @@ struct StreamVideo: AsyncParsableCommand {
         guard targetSimulator.state == .booted else {
             throw CLIError(errorDescription: "Simulator \(trimmedUDID) is not booted. Current state: \(targetSimulator.stateString.rawValue)")
         }
+
+        try await SimulatorDisplays.validateStreamDisplay(selection: display, simulator: targetSimulator, logger: logger)
 
         let cancellationFlag = CancellationFlag()
         let signalObserver = SignalObserver(signals: [SIGINT, SIGTERM]) {

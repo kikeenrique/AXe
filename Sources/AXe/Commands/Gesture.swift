@@ -100,10 +100,10 @@ struct Gesture: AsyncParsableCommand {
     @Argument(help: "The gesture preset to perform.")
     var preset: GesturePreset
     
-    @Option(name: .customLong("screen-width"), help: "Screen width in points (default: 390 for iPhone 15).")
+    @Option(name: .customLong("screen-width"), help: "Screen width in points (default: 390 for iPhone 15; the active display's width on the inner display of a foldable).")
     var screenWidth: Double?
-    
-    @Option(name: .customLong("screen-height"), help: "Screen height in points (default: 844 for iPhone 15).")
+
+    @Option(name: .customLong("screen-height"), help: "Screen height in points (default: 844 for iPhone 15; the active display's height on the inner display of a foldable).")
     var screenHeight: Double?
     
     @Option(name: .customLong("duration"), help: "Duration of the gesture in seconds (uses preset default if not specified).")
@@ -169,13 +169,14 @@ struct Gesture: AsyncParsableCommand {
         
         try await performGlobalSetup(logger: logger)
 
-        // Use provided dimensions or defaults
-        let width = screenWidth ?? 390.0
-        let height = screenHeight ?? 844.0
-        
+        // The session records the device type, so non-foldables skip the display lookup cheaply.
+        let session = try await HIDInteractor.makeSession(for: simulatorUDID, logger: logger)
+        let target = try await TouchTarget.nonMainTarget(forSimulatorUDID: simulatorUDID, logger: logger)
+        let (width, height) = screenSize(target: target)
+
         // Get gesture coordinates
-        let coords = preset.coordinates(screenWidth: width, screenHeight: height)
-        
+        let coords = try coordinates(target: target)
+
         // Use provided values or preset defaults
         let gestureDuration = duration ?? preset.defaultDuration
         let gestureDelta = delta ?? preset.defaultDelta
@@ -217,10 +218,32 @@ struct Gesture: AsyncParsableCommand {
         try await HIDInteractor
             .performHIDEvent(
                 finalEvent,
-                for: simulatorUDID,
+                in: session,
                 logger: logger
             )
-        
+
         logger.info().log("Gesture completed successfully")
     }
-} 
+
+    /// Screen size for the preset: the options, else the interface size of a non-main active
+    /// display of a foldable, else 390x844.
+    func screenSize(target: TouchTarget?) -> (width: Double, height: Double) {
+        let interface = target?.interfacePointSize
+        return (
+            width: screenWidth ?? interface?.width ?? 390.0,
+            height: screenHeight ?? interface?.height ?? 844.0
+        )
+    }
+
+    /// Preset coordinates ready for the HID event. Preset points are interface points and are sent
+    /// unchanged; IDB rotates them to the active panel. On a non-main active display of a foldable
+    /// they are checked against the panel first.
+    func coordinates(target: TouchTarget?) throws -> (startX: Double, startY: Double, endX: Double, endY: Double) {
+        let size = screenSize(target: target)
+        let coords = preset.coordinates(screenWidth: size.width, screenHeight: size.height)
+        guard let target else { return coords }
+        let start = try target.checkedInterfacePoint((x: coords.startX, y: coords.startY))
+        let end = try target.checkedInterfacePoint((x: coords.endX, y: coords.endY))
+        return (start.x, start.y, end.x, end.y)
+    }
+}

@@ -102,7 +102,10 @@ struct Touch: AsyncParsableCommand {
             primitives.append(.touch(.up, x: physicalPoint.x, y: physicalPoint.y))
         }
 
-        try HIDBroker.sendTouchPrimitives(primitives, simulatorUDID: simulatorUDID)
+        // The points above are in the active display's space; the broker refuses them if the active
+        // display or its rotation changed (fold, unfold, rotate) before it sends them.
+        let target = try await TouchTarget.nonMainTarget(forSimulatorUDID: simulatorUDID, logger: logger)
+        try HIDBroker.sendTouchPrimitives(primitives, simulatorUDID: simulatorUDID, target: target)
         
         logger.info().log("Touch events completed successfully")
     }

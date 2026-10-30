@@ -1,0 +1,78 @@
+{
+  "info" : {
+    "commandType" : "devicectl.device.info.displays",
+    "jsonVersion" : 5,
+    "outcome" : "success",
+    "version" : "651.31"
+  },
+  "result" : {
+    "backlightState" : "activeOn",
+    "displays" : [
+      {
+        "active" : true,
+        "backlightState" : "activeOn",
+        "bounds" : [
+          [
+            0,
+            0
+          ],
+          [
+            1398,
+            2034
+          ]
+        ],
+        "currentOrientation" : "rot0",
+        "displayId" : 1,
+        "name" : "LCD",
+        "nativeOrientation" : "rot0",
+        "nativeSize" : [
+          1398,
+          2034
+        ],
+        "pointScale" : 3,
+        "primary" : true,
+        "type" : {
+          "integrated" : {
+
+          }
+        },
+        "uniqueId" : "00000000-0000-0000-0000-000000000001"
+      },
+      {
+        "active" : false,
+        "backlightState" : "off",
+        "bounds" : [
+          [
+            0,
+            0
+          ],
+          [
+            2007,
+            2853
+          ]
+        ],
+        "currentOrientation" : "rot90",
+        "displayId" : 3,
+        "name" : "LCD-1",
+        "nativeOrientation" : "rot0",
+        "nativeSize" : [
+          2007,
+          2853
+        ],
+        "pointScale" : 3,
+        "primary" : false,
+        "type" : {
+          "integrated" : {
+
+          }
+        },
+        "uniqueId" : "00000000-0000-0000-0000-000000000003"
+      }
+    ],
+    "orientation" : {
+      "currentDeviceNonFlatOrientation" : "portrait",
+      "currentDeviceOrientation" : "portrait",
+      "currentDeviceOrientationLocked" : false
+    }
+  }
+}

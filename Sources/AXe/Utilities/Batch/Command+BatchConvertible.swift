@@ -31,11 +31,14 @@ private func resolveBatchTapPoint(
 ) async throws -> (resolution: TapResolution, roots: [AccessibilityElement]) {
     var isFirstFetch = true
     var latestRoots: [AccessibilityElement] = []
+    // Display state is re-read per step, so the target follows a fold or rotation between steps.
+    let target = try await TouchTarget.nonMainTarget(forSimulatorUDID: context.simulatorUDID, logger: logger)
     let resolution = try await AccessibilityPoller.pollForResolution(
         query: query,
         waitTimeout: context.waitTimeout,
         pollInterval: context.pollInterval,
         elementType: elementType,
+        target: target,
         logger: logger
     ) {
         let forceRefresh = !isFirstFetch
@@ -159,9 +162,8 @@ extension Swipe: BatchConvertible {
 
 extension Gesture: BatchConvertible {
     func toBatchPrimitives(context: BatchContext, logger: AxeLogger) async throws -> [BatchPrimitive] {
-        let width = screenWidth ?? 390.0
-        let height = screenHeight ?? 844.0
-        let coords = preset.coordinates(screenWidth: width, screenHeight: height)
+        let target = try await TouchTarget.nonMainTarget(forSimulatorUDID: context.simulatorUDID, logger: logger)
+        let coords = try coordinates(target: target)
         let gestureDuration = duration ?? preset.defaultDuration
         let gestureDelta = delta ?? preset.defaultDelta
 

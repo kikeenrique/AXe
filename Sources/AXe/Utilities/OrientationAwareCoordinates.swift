@@ -66,6 +66,11 @@ enum CoordinateMapping {
     ///
     /// Physical point = `(offsetX + lx * scale, offsetY + ly * scale)`.
     case letterbox(scale: Double, offsetX: Double, offsetY: Double)
+
+    /// The active display of a foldable is not the main display. Interface points (including
+    /// selector points, which come from the interface-space panel tree) are sent unchanged, because
+    /// IDB routes them to the active display and rotates them; points outside the panel are refused.
+    case display(TouchTarget)
 }
 
 // MARK: - IDB Touch Routing
@@ -132,11 +137,14 @@ struct OrientationAwareCoordinates {
     /// Determines which coordinate mapping to apply for the given simulator.
     ///
     /// Detection flow:
+    /// 0. On a foldable whose active display is not the main one, use the `TouchTarget` from
+    ///    the display state's orientation and size (no AX fetch, no orientation or screenshot
+    ///    probe). Fail when the active display of a foldable cannot be determined.
     /// 1. Fetch AX application frame.
-    /// 2. If an explicit override was supplied → rotation case (passthrough when IDB rotates).
+    /// 2. If an explicit override was supplied → rotation case.
     /// 3. Otherwise read the interface orientation (`interfaceOrientation(simulatorUDID:logger:)`).
     /// 4. If the orientation is unavailable and the AX frame is portrait-shaped → passthrough.
-    /// 5. If unavailable and landscape-shaped, probe screenshot dimensions.
+    /// 5. If unavailable and landscape-shaped, probe screenshot dimensions (of the active display on foldables).
     ///    - Screenshot portrait-shaped (taller than wide) → letterbox case.
     ///    - Screenshot landscape-shaped (wider than tall) → rotated device case.
     ///
@@ -152,6 +160,10 @@ struct OrientationAwareCoordinates {
         orientationOverride: SimulatorOrientation? = nil,
         logger: AxeLogger
     ) async throws -> CoordinateMapping {
+        if let target = try await TouchTarget.nonMainTarget(forSimulatorUDID: simulatorUDID, logger: logger) {
+            return displayMapping(for: target, logger: logger)
+        }
+
         let roots = try await AccessibilityFetcher.fetchAccessibilityElements(
             for: simulatorUDID,
             logger: logger
@@ -171,6 +183,14 @@ struct OrientationAwareCoordinates {
         orientationOverride: SimulatorOrientation? = nil,
         logger: AxeLogger
     ) async throws -> CoordinateMapping {
+        // A non-main active display of a foldable maps through its TouchTarget: the AX application
+        // frame is the cover's size, so it does not describe the inner panel. Non-foldables get nil
+        // without a display read, and a failed simulator lookup is treated as nil.
+        let displayState = try await SimulatorDisplays.state(forSimulatorUDID: simulatorUDID, logger: logger)
+        if let target = try TouchTarget.resolve(state: displayState), !target.isMain {
+            return displayMapping(for: target, logger: logger)
+        }
+
         guard let appFrame = applicationFrame(from: roots) else {
             throw CLIError(errorDescription: "Unable to determine coordinate mapping because the accessibility application frame is unavailable.")
         }
@@ -190,6 +210,8 @@ struct OrientationAwareCoordinates {
                 logger: logger
             )
         }
+
+        let probeDisplayID = displayState.flatMap { $0.isMultiDisplay ? $0.activeDisplay?.displayId : nil }
 
         // Prefer the simulator's reported interface rotation when available; this
         // distinguishes landscape-left from landscape-right and catches upside-down portrait.
@@ -232,7 +254,11 @@ struct OrientationAwareCoordinates {
             "AX frame \(Int(appFrame.width))×\(Int(appFrame.height)) is landscape; probing screenshot dimensions"
         )
 
-        let screenshotDims = await screenshotPixelDimensions(for: simulatorUDID, logger: logger)
+        let screenshotDims = await screenshotPixelDimensions(
+            for: simulatorUDID,
+            displayID: probeDisplayID,
+            logger: logger
+        )
 
         if let dims = screenshotDims, dims.height > dims.width {
             // Screenshot is portrait-shaped despite a landscape AX frame →
@@ -305,7 +331,7 @@ struct OrientationAwareCoordinates {
         do {
             let rotation = try await simulator.displays.configuration().activeGeometry().rotation
             logger.info().log("Orientation probe: active display rotation \(rotation.rawValue)")
-            return orientation(for: rotation)
+            return SimulatorDisplay.Rotation(rawValue: rotation.rawValue)?.simulatorOrientation
         } catch {
             logger.info().log("Orientation probe: no display rotation (\(error.localizedDescription)); reading the device orientation")
         }
@@ -345,21 +371,12 @@ struct OrientationAwareCoordinates {
         }
     }
 
-    /// The interface orientation shown with an IDB display rotation, relative to the panel's
-    /// native portrait axes. `nil` for a rotation this build of AXe does not know.
-    static func orientation(for rotation: SimulatorDisplayRotation) -> SimulatorOrientation? {
-        switch rotation {
-        case .upright:
-            return .portrait
-        case .clockwise:
-            return .landscape
-        case .upsideDown:
-            return .portraitUpsideDown
-        case .counterclockwise:
-            return .landscapeFlipped
-        @unknown default:
-            return nil
-        }
+    private static func displayMapping(for target: TouchTarget, logger: AxeLogger) -> CoordinateMapping {
+        let size = target.nativePointSize
+        logger.info().log(
+            "Active display \(target.displayID) is not the main display; using its \(target.rotation.rawValue) over \(size.width)x\(size.height) pt"
+        )
+        return .display(target)
     }
 
     // MARK: - Screenshot Dimension Probe
@@ -370,9 +387,12 @@ struct OrientationAwareCoordinates {
     /// Only the PNG header is read from the temporary file, which is removed
     /// before this function returns.
     ///
-    /// Returns `nil` if the process fails or the output is not a valid PNG.
+    /// - Parameter displayID: Display to capture on multi-display simulators. simctl refuses to
+    ///   choose between several displays without it.
+    /// - Returns: `nil` if the process fails or the output is not a valid PNG.
     static func screenshotPixelDimensions(
         for simulatorUDID: String,
+        displayID: Int? = nil,
         logger: AxeLogger
     ) async -> (width: Int, height: Int)? {
         let tempURL = FileManager.default.temporaryDirectory
@@ -380,9 +400,15 @@ struct OrientationAwareCoordinates {
             .appendingPathExtension("png")
         defer { try? FileManager.default.removeItem(at: tempURL) }
 
+        var arguments = ["simctl", "io", simulatorUDID, "screenshot", "--type", "png"]
+        if let displayID {
+            arguments.append("--display=\(displayID)")
+        }
+        arguments.append(tempURL.path)
+
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/xcrun")
-        process.arguments = ["simctl", "io", simulatorUDID, "screenshot", "--type", "png", tempURL.path]
+        process.arguments = arguments
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
 
@@ -569,7 +595,7 @@ struct OrientationAwareCoordinates {
             logger: logger
         )
 
-        return applyMapping(mapping, to: point, logger: logger)
+        return try applyMapping(mapping, to: point, logger: logger)
     }
 
     static func translate(
@@ -586,7 +612,7 @@ struct OrientationAwareCoordinates {
             logger: logger
         )
 
-        return applyMapping(mapping, to: point, logger: logger)
+        return try applyMapping(mapping, to: point, logger: logger)
     }
 
     /// Translates multiple logical points using a single detection round-trip.
@@ -612,7 +638,7 @@ struct OrientationAwareCoordinates {
             logger: logger
         )
 
-        return points.map { applyMapping(mapping, to: $0, logger: logger) }
+        return try points.map { try applyMapping(mapping, to: $0, logger: logger) }
     }
 
     static func translateBatch(
@@ -629,22 +655,32 @@ struct OrientationAwareCoordinates {
             logger: logger
         )
 
-        return points.map { applyMapping(mapping, to: $0, logger: logger) }
+        return try points.map { try applyMapping(mapping, to: $0, logger: logger) }
     }
 
     // MARK: - Private Helpers
 
     /// Applies a `CoordinateMapping` to a single logical point, logging the translation.
-    private static func applyMapping(
+    ///
+    /// - Throws: on a non-main display of a foldable, when the point lies outside the panel.
+    static func applyMapping(
         _ mapping: CoordinateMapping,
         to point: (x: Double, y: Double),
         logger: AxeLogger
-    ) -> (x: Double, y: Double) {
+    ) throws -> (x: Double, y: Double) {
         let physical: (x: Double, y: Double)
 
         switch mapping {
         case .passthrough:
             return point
+
+        case .display(let target):
+            // IDB rotates interface points to the active panel; AXe only refuses points outside it.
+            physical = try target.checkedInterfacePoint(point)
+            logger.info().log(
+                String(format: "Interface (%.1f, %.1f) is inside display %d; IDB routes and rotates it",
+                       point.x, point.y, target.displayID)
+            )
 
         case .rotation(let orientation, let portraitSize):
             physical = translateToPhysical(point: point, orientation: orientation, portraitSize: portraitSize)

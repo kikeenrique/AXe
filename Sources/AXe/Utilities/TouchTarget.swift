@@ -1,0 +1,312 @@
+import AXeCore
+import CoreGraphics
+import FBSimulatorControl
+import Foundation
+
+// MARK: - Touch Target
+
+/// The active display of a multi-display (foldable) simulator, from its display state.
+///
+/// `isMain` is true for the primary display (the cover), whose accessibility tree and frames need
+/// no filtering or conversion.
+///
+/// Every coordinate AXe receives (`-x/-y`, swipe, drag, gesture, selector activation points) is an
+/// interface point of the active display, as a screenshot shows it, and is sent to IDB unchanged;
+/// IDB rotates it to the panel. `nativePoint(fromInterface:)` is the same conversion, used here for
+/// the bounds check and for accessibility frames.
+struct TouchTarget: Equatable {
+    static let unknownDisplayMessage = "AXe could not determine which display of the foldable simulator is active, so no touch was sent. Confirm the simulator is booted and try again."
+
+    let displayID: Int
+    /// Native portrait size in pixels.
+    let nativePixelSize: SimulatorDisplay.Size
+    let pointScale: Double
+    let rotation: SimulatorDisplay.Rotation
+    let isMain: Bool
+    /// Window sizes, in points or pixels, that belong to other displays or to pixel-sized backing
+    /// windows. Accessibility windows of these sizes are not part of the active panel.
+    let foreignWindowSizes: [SimulatorDisplay.Size]
+
+    init(
+        displayID: Int,
+        nativePixelSize: SimulatorDisplay.Size,
+        pointScale: Double,
+        rotation: SimulatorDisplay.Rotation,
+        isMain: Bool,
+        foreignWindowSizes: [SimulatorDisplay.Size] = []
+    ) {
+        self.displayID = displayID
+        self.nativePixelSize = nativePixelSize
+        self.pointScale = pointScale
+        self.rotation = rotation
+        self.isMain = isMain
+        self.foreignWindowSizes = foreignWindowSizes
+    }
+
+    /// Native portrait size in points: `nativeSize / pointScale`.
+    var nativePointSize: SimulatorDisplay.Size {
+        SimulatorDisplay.Size(width: nativePixelSize.width / pointScale, height: nativePixelSize.height / pointScale)
+    }
+
+    /// Interface size in points, as a screenshot of the display shows it.
+    var interfacePointSize: SimulatorDisplay.Size {
+        let native = nativePointSize
+        switch rotation {
+        case .rot0, .rot180:
+            return native
+        case .rot90, .rot270:
+            return SimulatorDisplay.Size(width: native.height, height: native.width)
+        }
+    }
+
+    /// The interface bounds of the display in points.
+    var interfaceBounds: AccessibilityElement.Frame {
+        let size = interfacePointSize
+        return AccessibilityElement.Frame(x: 0, y: 0, width: size.width, height: size.height)
+    }
+
+    // MARK: Conversions
+
+    /// Interface point → native portrait point. rot90: `(y, H - x)`; rot270: `(W - y, x)`;
+    /// rot180: `(W - x, H - y)`; rot0: identity. `W`/`H` are the native point size.
+    func nativePoint(fromInterface point: (x: Double, y: Double)) -> (x: Double, y: Double) {
+        let size = nativePointSize
+        return OrientationCoordinateMath.translateToPhysical(
+            x: point.x,
+            y: point.y,
+            orientation: rotation.simulatorOrientation.coreOrientation,
+            portraitWidth: size.width,
+            portraitHeight: size.height
+        )
+    }
+
+    /// Native portrait point → interface point; the inverse of `nativePoint(fromInterface:)`.
+    func interfacePoint(fromNative point: (x: Double, y: Double)) -> (x: Double, y: Double) {
+        let size = nativePointSize
+        switch rotation {
+        case .rot0:
+            return point
+        case .rot90:
+            return (x: size.height - point.y, y: point.x)
+        case .rot180:
+            return (x: size.width - point.x, y: size.height - point.y)
+        case .rot270:
+            return (x: point.y, y: size.width - point.x)
+        }
+    }
+
+    /// Converts a native-space accessibility frame to the interface frame it covers on screen.
+    func interfaceRect(fromNative frame: AccessibilityElement.Frame) -> AccessibilityElement.Frame {
+        let first = interfacePoint(fromNative: (x: frame.x, y: frame.y))
+        let second = interfacePoint(fromNative: (x: frame.x + frame.width, y: frame.y + frame.height))
+        return AccessibilityElement.Frame(
+            x: min(first.x, second.x),
+            y: min(first.y, second.y),
+            width: abs(second.x - first.x),
+            height: abs(second.y - first.y)
+        )
+    }
+
+    func containsNativePoint(_ point: (x: Double, y: Double)) -> Bool {
+        let size = nativePointSize
+        return point.x >= 0 && point.y >= 0 && point.x <= size.width && point.y <= size.height
+    }
+
+    /// Converts an interface point and refuses one that lands outside the panel: such a touch
+    /// would go nowhere (or to the panel edge) while the command reports success.
+    func checkedNativePoint(fromInterface point: (x: Double, y: Double)) throws -> (x: Double, y: Double) {
+        let native = nativePoint(fromInterface: point)
+        guard containsNativePoint(native) else {
+            let interface = interfacePointSize
+            throw CLIError(
+                errorDescription: "Point (\(Self.format(point.x)), \(Self.format(point.y))) is outside display \(displayID), which is \(Self.format(interface.width))x\(Self.format(interface.height)) points in its current orientation (native point (\(Self.format(native.x)), \(Self.format(native.y))) of \(Self.format(nativePointSize.width))x\(Self.format(nativePointSize.height))). No touch was sent. Take coordinates from `axe screenshot` of the active display (pixels divided by \(Self.format(pointScale)))."
+            )
+        }
+        return native
+    }
+
+    /// Refuses an interface point that lands outside the panel and returns it unchanged otherwise.
+    ///
+    /// IDB routes touches to the active display and rotates interface points itself (the same
+    /// maths as `nativePoint(fromInterface:)`), but it clamps an out-of-panel point silently. AXe
+    /// keeps the explicit error, so it checks the point here and sends the interface point.
+    func checkedInterfacePoint(_ point: (x: Double, y: Double)) throws -> (x: Double, y: Double) {
+        _ = try checkedNativePoint(fromInterface: point)
+        return point
+    }
+
+    private static func format(_ value: Double) -> String {
+        String(format: "%.1f", value)
+    }
+
+    // MARK: Accessibility windows
+
+    /// The accessibility tree of the active panel, with every frame in interface points.
+    ///
+    /// On an unfolded foldable, SpringBoard exposes the windows of both panels (and pixel-sized
+    /// backing windows) under one application element, so every home-screen label matches twice.
+    /// Direct children of each root whose frame size matches `foreignWindowSizes` (either
+    /// orientation) are removed.
+    ///
+    /// The frame space is decided per root (measured on the Duo inner panel): SpringBoard's
+    /// application element reports another display's size (the cover's 466x678) and its windows
+    /// carry native portrait frames, while an app's application element reports the panel size and
+    /// its windows carry interface frames. Every remaining window under a root whose own frame is
+    /// foreign-sized is converted from native to interface space. A root without a frame falls back
+    /// to the window shape: a native-shaped window on a quarter-turned panel is converted.
+    ///
+    /// The root's own frame becomes the display's interface bounds when it is foreign-sized
+    /// (SpringBoard) or native-shaped on a quarter-turned panel (an app at rot90/rot270 reports
+    /// 669x951); any other root frame is kept.
+    ///
+    /// A root whose windows all belong to other displays is dropped.
+    ///
+    /// - Throws: when the tree has windows but none of them belongs to the active panel (for
+    ///   example a tree read while the panel switched); resolving against the other panel's windows
+    ///   would bring back double matches or convert the wrong coordinates.
+    func activePanelRoots(_ roots: [AccessibilityElement]) throws -> [AccessibilityElement] {
+        try activePanelRoots(roots, consequence: "No touch was sent.")
+    }
+
+    /// `activePanelRoots(_:)` for any accessibility tree representation. `consequence` completes
+    /// the error message, for example "No touch was sent."
+    func activePanelRoots<Tree: AccessibilityFrameTree>(_ roots: [Tree], consequence: String) throws -> [Tree] {
+        guard !isMain else { return roots }
+        var panelRoots: [Tree] = []
+        var hasWindows = false
+        var keptWindows = false
+        for root in roots {
+            guard let children = root.children, !children.isEmpty else {
+                panelRoots.append(interfaceRoot(root))
+                continue
+            }
+            hasWindows = true
+            let kept = children.filter { !isForeignSized($0.frame) }
+            guard !kept.isEmpty else { continue }
+            keptWindows = true
+            panelRoots.append(interfaceRoot(root).replacingChildren(kept.map { interfaceWindow($0, under: root) }))
+        }
+        guard keptWindows || !hasWindows else {
+            throw CLIError(
+                errorDescription: "The accessibility tree has no window on display \(displayID), the active display; it may have been read while the simulator folded or unfolded. \(consequence) Run `axe posture` and try again."
+            )
+        }
+        return panelRoots
+    }
+
+    /// True when the frames of `window` (a direct child of `root`) are in native portrait space.
+    func isNativeSpaceWindow<Tree: AccessibilityFrameTree>(_ window: Tree, under root: Tree) -> Bool {
+        guard rotation != .rot0 else { return false }
+        if let rootFrame = root.frame {
+            return isForeignSized(rootFrame)
+        }
+        guard isQuarterTurn, let frame = window.frame else { return false }
+        return Self.sizeMatches(frame, nativePointSize)
+    }
+
+    private var isQuarterTurn: Bool {
+        rotation == .rot90 || rotation == .rot270
+    }
+
+    private func interfaceWindow<Tree: AccessibilityFrameTree>(_ window: Tree, under root: Tree) -> Tree {
+        guard isNativeSpaceWindow(window, under: root) else { return window }
+        // An all-zero frame means "no frame" (SpringBoard reports it for some off-page icons);
+        // converting it would place the element at a panel corner.
+        return window.mappingFrames { Self.isZero($0) ? $0 : interfaceRect(fromNative: $0) }
+    }
+
+    private static func isZero(_ frame: AccessibilityElement.Frame) -> Bool {
+        frame.x == 0 && frame.y == 0 && frame.width == 0 && frame.height == 0
+    }
+
+    private func interfaceRoot<Tree: AccessibilityFrameTree>(_ root: Tree) -> Tree {
+        guard let frame = root.frame,
+              isForeignSized(frame) || (isQuarterTurn && Self.sizeMatches(frame, nativePointSize)) else {
+            return root
+        }
+        return root.replacingFrame(interfaceBounds)
+    }
+
+    private func isForeignSized(_ frame: AccessibilityElement.Frame?) -> Bool {
+        guard let frame else { return false }
+        return foreignWindowSizes.contains { size in
+            Self.sizeMatches(frame, size) || Self.sizeMatches(frame, SimulatorDisplay.Size(width: size.height, height: size.width))
+        }
+    }
+
+    private static func sizeMatches(_ frame: AccessibilityElement.Frame, _ size: SimulatorDisplay.Size) -> Bool {
+        abs(frame.width - size.width) < 0.5 && abs(frame.height - size.height) < 0.5
+    }
+
+    // MARK: Resolution
+
+    /// The touch target for devicectl state.
+    ///
+    /// - Returns: `nil` without state (non-foldable, or `AXE_DISPLAY_PROBE=never`) or for a single
+    ///   display, and for a main display without geometry (the main path needs none).
+    /// - Throws: when the active display of a foldable cannot be determined, or a non-main display
+    ///   lacks the orientation and size needed to convert coordinates.
+    static func resolve(state: SimulatorDisplayState?) throws -> TouchTarget? {
+        guard let state, state.isMultiDisplay else { return nil }
+        guard let active = state.activeDisplay else {
+            throw CLIError(errorDescription: unknownDisplayMessage)
+        }
+        // The primary display (the cover of a foldable) is the main touchscreen.
+        let isMain = active.primary
+        guard let rotation = active.currentRotation,
+              let nativeSize = active.nativeSize,
+              let pointScale = active.pointScale,
+              pointScale > 0, nativeSize.width > 0, nativeSize.height > 0 else {
+            if isMain { return nil }
+            throw CLIError(
+                errorDescription: "AXe could not convert coordinates for display \(active.label) because the simulator did not report its orientation and size."
+            )
+        }
+        let activePoints = active.nativeSizePoints
+        var foreign: [SimulatorDisplay.Size] = []
+        for display in state.displays {
+            if let pixels = display.nativeSize {
+                foreign.append(pixels)
+            }
+            // By unique ID: both displays carry `unknownDisplayID` when devicectl's IDs are unavailable.
+            if !display.isSameDisplay(as: active), let points = display.nativeSizePoints, points != activePoints {
+                foreign.append(points)
+            }
+        }
+        return TouchTarget(
+            displayID: active.displayId,
+            nativePixelSize: nativeSize,
+            pointScale: pointScale,
+            rotation: rotation,
+            isMain: isMain,
+            foreignWindowSizes: foreign
+        )
+    }
+
+    /// The non-main target for a display state; `nil` when touches take the main-display path.
+    static func nonMainTarget(state: SimulatorDisplayState?) throws -> TouchTarget? {
+        try resolve(state: state).flatMap { $0.isMain ? nil : $0 }
+    }
+
+    /// The target for a simulator that needs an explicit display target: a non-main active
+    /// display. `nil` when touches take the main-display path.
+    ///
+    /// With `AXE_DISPLAY_PROBE=never` on a foldable this prints `SimulatorDisplays.probeDisabledWarning`
+    /// once per process: the target is then always `nil`, so selector taps resolve against the
+    /// unfiltered tree.
+    @MainActor
+    static func nonMainTarget(forSimulatorUDID simulatorUDID: String, logger: AxeLogger) async throws -> TouchTarget? {
+        SimulatorDisplays.warnIfProbeDisabled(simulatorUDID: simulatorUDID, logger: logger)
+        return try nonMainTarget(state: await SimulatorDisplays.state(forSimulatorUDID: simulatorUDID, logger: logger))
+    }
+
+    @MainActor
+    static func nonMainTarget(for simulator: Simulator, logger: AxeLogger) async throws -> TouchTarget? {
+        SimulatorDisplays.warnIfProbeDisabled(simulatorUDID: simulator.udid, logger: logger)
+        return try nonMainTarget(state: await SimulatorDisplays.state(for: simulator, logger: logger))
+    }
+}
+
+// Touch routing (the display target and the Indigo refusal) moved into IDB:
+// `SimulatorHID.send(event:logger:on: .active)` routes every touch to the active display, rotates
+// interface points to the panel and refuses a named display over Indigo.

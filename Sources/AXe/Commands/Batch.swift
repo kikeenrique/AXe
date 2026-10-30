@@ -12,6 +12,10 @@ struct Batch: AsyncParsableCommand {
         Supported step commands:
           tap, swipe, gesture, touch, type, button, key, key-sequence, key-combo
 
+        Device-state steps (barriers; later steps re-read display and accessibility state):
+          hinge <set <degrees>|open|close|half> [--duration <s>] [--no-wait]
+          rotate <portrait|landscape|portrait-upside-down|landscape-flipped>
+
         Batch-only pseudo-step:
           sleep <seconds>
 
@@ -102,12 +106,13 @@ struct Batch: AsyncParsableCommand {
         }
 
         let session = try await HIDInteractor.makeSession(for: simulatorUDID, logger: logger)
-        let runner = BatchPlanRunner(session: session, logger: logger)
+        let runner = BatchPlanRunner(session: session, logger: logger, context: context)
 
         var failures: [String] = []
 
         for (index, line) in stepLines.enumerated() {
             var stepName = "<unparsed>"
+            await Self.beginStep()
             do {
                 let tokens = try ShellTokenizer.tokenize(line)
                 stepName = tokens.first ?? "<empty>"
@@ -136,19 +141,37 @@ struct Batch: AsyncParsableCommand {
         print("✓ Batch completed successfully (\(stepLines.count) steps)")
     }
 
-    /// The user-facing text of a step failure.
+    /// The user-facing text of a step failure. ArgumentParser errors are not `LocalizedError`, so
+    /// `localizedDescription` would print a generic "operation couldn't be completed" message.
     static func stepFailureMessage(for error: Error) -> String {
         if let error = error as? SimulatorDisplayError {
             switch error {
             case .changed, .transitioning:
                 // IDB binds a step's HID events to the display active at its first touch and stops
-                // the step when that display rotates before the step ends.
-                return "The simulator display changed (for example a rotation) while this step's input was being sent, so IDB stopped the step; its remaining events were not sent. Re-run the batch from this step. (\(error.localizedDescription))"
+                // the step when that display rotates, folds or unfolds before the step ends.
+                return "The simulator display changed (rotation, fold or unfold) while this step's input was being sent, so IDB stopped the step; its remaining events were not sent. Re-run the batch from this step, or put the display change in its own `rotate`/`hinge` step. (\(error.localizedDescription))"
             default:
                 break
             }
         }
-        return error.localizedDescription
+        if let error = error as? CLIError {
+            return error.message
+        }
+        if let error = error as? ValidationError {
+            return error.message
+        }
+        if let localized = error as? LocalizedError, localized.errorDescription != nil {
+            return error.localizedDescription
+        }
+        return Batch.message(for: error)
+    }
+
+    /// Clears cached simulator display state so each step sees the current fold state. A foldable can
+    /// fold or unfold during a `sleep` step or an element wait; a stale state would convert and route
+    /// later touches to the wrong display.
+    @MainActor
+    static func beginStep() {
+        SimulatorDisplays.invalidateCachedState()
     }
 
     private func loadStepLines() throws -> [String] {

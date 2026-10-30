@@ -8,13 +8,20 @@ import AppKit
 
 actor CancellationFlag {
     private(set) var value = false
+    /// Number of `cancel()` calls, so a second Ctrl+C can escalate.
+    private(set) var count = 0
 
     func cancel() {
         value = true
+        count += 1
     }
 
     func isCancelled() -> Bool {
         value
+    }
+
+    func cancellationCount() -> Int {
+        count
     }
 }
 

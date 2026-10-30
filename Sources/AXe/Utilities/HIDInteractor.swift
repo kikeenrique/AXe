@@ -30,6 +30,8 @@ struct HIDInteractor {
     static func makeSession(for simulatorUDID: String, logger: AxeLogger) async throws -> Session {
         let simulator = try SimulatorSession.bootedSimulator(udid: simulatorUDID, logger: logger)
         logger.info().log("Simulator obtained: \(simulator.udid) (\(simulator.name)), state verified: booted")
+        // Lets later display-state lookups by UDID skip another simulator lookup.
+        SimulatorDisplays.recordDeviceType(for: simulator)
 
         let bootIdentity = try HIDBroker.currentBootIdentity(simulatorUDID: simulatorUDID)
         // The transport follows the CoreSimulator version, as in IDB; `dtuhidd` itself starts on

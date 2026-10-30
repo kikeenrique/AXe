@@ -9,6 +9,12 @@ struct DescribeUICommandSurfaceTests {
         #expect(result.output.contains("--point <x,y>"))
     }
 
+    @Test("--all-displays appears in describe-ui --help")
+    func describeUIHelpIncludesAllDisplays() async throws {
+        let result = try await TestHelpers.runAxeCommand("describe-ui --help")
+        #expect(result.output.contains("--all-displays"))
+    }
+
     @Test("--point appears in help describe-ui")
     func helpDescribeUIIncludesPoint() async throws {
         let result = try await TestHelpers.runAxeCommand("help describe-ui")

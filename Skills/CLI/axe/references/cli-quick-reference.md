@@ -29,6 +29,8 @@ axe tap -x 320 -y 780 --tap-style physical --udid <UDID>
 axe tap -x 100 -y 200 --pre-delay 1.0 --post-delay 0.5 --udid <UDID>
 ```
 
+Foldable simulators: `tap` goes to the active display, cover or inner. `-x/-y` are interface points of that display as `axe screenshot` shows it (pixels / 3; the unfolded inner display in landscape is 951x669). `--id/--label/--value` resolve against the active display's windows only.
+
 ## Slider
 
 ```bash
@@ -51,6 +53,8 @@ axe swipe --start-x 50 --start-y 500 --end-x 350 --end-y 500 --duration 2.0 --de
 axe swipe --start-x 100 --start-y 300 --end-x 300 --end-y 100 --pre-delay 1.0 --post-delay 0.5 --udid <UDID>
 ```
 
+Foldable simulators: `swipe` (and `drag`, `slider`, `gesture`) goes to the active display, with coordinates in its interface points. `gesture` presets default to the active display's size on the inner display.
+
 ## Drag (low-level)
 
 ```bash
@@ -68,6 +72,8 @@ axe touch -x 150 -y 250 --up --udid <UDID>                            # Touch up
 axe touch -x 150 -y 250 --down --up --udid <UDID>                     # Tap
 axe touch -x 150 -y 250 --down --up --delay 1.0 --udid <UDID>        # Long press
 ```
+
+Foldable simulators: `touch` goes to the active display. If the simulator folds or unfolds between preparing and sending the touch, it fails without sending anything; run it again.
 
 ## Gesture presets
 
@@ -194,16 +200,44 @@ axe batch --udid <UDID> \
 # Toggle a setting switch by label
 axe batch --udid <UDID> \
   --step "tap --label 'Weather Alerts'"
+
+# Foldable: act on the inner display, fold, act on the cover display (barrier steps)
+axe batch --udid <UDID> \
+  --step "hinge open" \
+  --step "tap --label Settings" \
+  --step "sleep 1" \
+  --step "hinge close" \
+  --step "tap --label General"
 ```
 
-See `batch-reference.md` for full batch semantics.
+See `batch-reference.md` for full batch semantics. Foldable simulators: touch steps go to the display active when the step runs; `hinge` and `rotate` steps re-read display and accessibility state for later steps.
 
 ## Accessibility / UI inspection
 
 ```bash
 axe describe-ui --udid <UDID>                      # Full screen
 axe describe-ui --point 100,200 --udid <UDID>      # Specific point
+axe describe-ui --all-displays --udid <UDID>       # Foldable: unconverted tree of the active display
 ```
+
+Foldable simulators: with the inner display active, `describe-ui` reports only that display's windows, with `frame`/`AXFrame` in its interface points (as `axe screenshot` shows it, pixels / 3), so labels and identifiers appear once and the JSON schema is unchanged. `--point X,Y` takes interface points of the inner display; AXe hit-tests the reported tree (windows front to back, later windows taken as in front; the deepest element containing the point, preferring a label or value over an identifier only) and prints that element. If the active display cannot be determined, `describe-ui` warns on stderr and prints the unfiltered tree. `--all-displays` prints the active display's tree as the simulator reports it, without AXe's conversion: labels appear once, but SpringBoard frames stay in native portrait points; `--point` then uses the simulator's hit test (interface points of the active display). With the cover active, output is unchanged; home-screen frames there can differ from the visible layout, so verify with `axe screenshot`.
+
+## Foldable simulators (hinge, posture, rotate)
+
+```bash
+axe hinge close --udid <UDID>                      # 0 degrees: cover display active
+axe hinge open --duration 1.5 --udid <UDID>        # 180 degrees, animated: inner display active
+axe hinge half --udid <UDID>                       # 90 degrees (Device Hub's preset is 130)
+axe hinge set 130 --udid <UDID>                    # Any angle from 0 to 180
+axe hinge sweep 180 0 --duration 2 --udid <UDID>   # Animate between two angles
+axe hinge open --no-wait --udid <UDID>             # Skip the display-switch wait; posture printed as-is
+axe hinge get --udid <UDID>                        # Print the reported angle
+axe posture --udid <UDID>                          # Angle, active display, rotation, size
+axe posture --json --udid <UDID>                   # Same as JSON; hingeAngle is null without a hinge
+axe rotate portrait --udid <UDID>                  # portrait|landscape|portrait-upside-down|landscape-flipped
+```
+
+`hinge` sets the angle directly on iOS 27.2 and later runtimes, or sweeps it over `--duration` (at most 30 s); older runtimes always sweep from the current angle (from the opposite end when it cannot be read) over at least 0.4 s. It then confirms the reported angle and waits up to 8 s for the cover (at most 30 degrees) or inner (at least 120 degrees) display to become active and lit; between those angles either display can be active. `hinge sweep <from> <to>` always sweeps, over at least 0.4 s and at most 10 degrees per step, and first moves to `<from>` when the hinge is elsewhere. `hinge`, `rotate` and `posture` print the resulting posture (`--json` for JSON); after `hinge --no-wait` it is read at once and may still be changing. When devicectl fails, `posture` prints IDB's displays with a warning, and the backlight and device orientation as unknown. `rotate` names the interface orientation of the active display; on foldables AXe tries device orientations until the active display reports it and restores the starting orientation if none does; elsewhere it sets the matching device orientation (landscape is device `landscapeRight`) and warns (without "Rotated to") when the foreground app or screen does not rotate. `posture` works on any simulator. `hinge` fails at once with "reports no hinge" on simulators without one.
 
 ## Screenshot
 
@@ -211,16 +245,25 @@ axe describe-ui --point 100,200 --udid <UDID>      # Specific point
 axe screenshot --udid <UDID>                                    # Auto-named
 axe screenshot --output ~/Desktop/shot.png --udid <UDID>        # Specific file
 axe screenshot --output ~/Desktop/ --udid <UDID>                # Directory (auto-named)
+axe screenshot --display cover --output cover.png --udid <UDID> # Foldable: cover display
+axe screenshot --display inner --output inner.png --udid <UDID> # Foldable: inner display
+axe screenshot --display 3 --output shot.png --udid <UDID>      # Display ID or name (e.g. LCD-1)
 ```
+
+`--display` defaults to `auto`, the active display, captured once a fold has settled. On foldable simulators (iPhone Duo) AXe reads the display state from the simulator; `cover`, `inner`, an ID or a name are captured with `xcrun simctl io` and may name an inactive display (with a warning). `AXE_DISPLAY_PROBE=auto|always|never` overrides when display detection runs.
 
 ## Video recording
 
 ```bash
 axe record-video --udid <UDID> --fps 15 --output recording.mp4
 axe record-video --udid <UDID> --fps 10 --quality 60 --scale 0.5 --output low-bw.mp4
+axe record-video --udid <UDID> --output active.mp4                    # Foldable: the active display
+axe record-video --display cover --udid <UDID> --output cover.mp4     # Foldable: cover display
 ```
 
 Press `Ctrl+C` to stop recording. AXe finalises the MP4 before exiting.
+
+`--display` takes the same values as `screenshot` and defaults to `auto`. On foldable simulators, or with an explicit `--display`, AXe records with `xcrun simctl io recordVideo`: H.264 at the display's native size, one frame per display update, remuxed to MP4 (an output ending in `.mov` keeps simctl's QuickTime file). `--fps`, `--quality` and `--scale` other than 1.0 fail on that path. The display is fixed when recording starts; a fold mid-recording does not switch it. Other simulators keep the default capture path and options.
 
 ## Video streaming
 
@@ -228,7 +271,10 @@ Press `Ctrl+C` to stop recording. AXe finalises the MP4 before exiting.
 axe stream-video --udid <UDID> --fps 10 --format mjpeg > stream.mjpeg
 axe stream-video --udid <UDID> --fps 30 --format ffmpeg | \
   ffmpeg -f image2pipe -framerate 30 -i - -c:v libx264 -preset ultrafast output.mp4
+axe stream-video --display cover --udid <UDID> > cover.mjpeg          # Foldable: only while folded
 ```
+
+Foldable simulators: `stream-video` streams the active display, the cover while folded and the inner display while unfolded. `--display auto` (default) follows it; `--display cover`, `--display inner`, an ID or a name works only while that display is active and fails otherwise. Use `record-video --display` or `screenshot --display` to capture an inactive display.
 
 ## Timing parameters
 

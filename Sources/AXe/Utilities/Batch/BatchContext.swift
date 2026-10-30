@@ -42,6 +42,11 @@ final class BatchContext {
         self.pollInterval = pollInterval
     }
 
+    /// Drops the cached accessibility tree, for example after a fold or rotation.
+    func invalidateAccessibilityCache() {
+        cachedRoots = nil
+    }
+
     func accessibilityRoots(logger: AxeLogger, forceRefresh: Bool = false) async throws -> [AccessibilityElement] {
         switch axCachePolicy {
         case .none:

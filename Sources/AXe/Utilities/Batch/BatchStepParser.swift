@@ -12,6 +12,8 @@ enum BatchStepKind: String {
     case keySequence = "key-sequence"
     case keyCombo = "key-combo"
     case sleep
+    case hinge
+    case rotate
 }
 
 @MainActor
@@ -57,9 +59,47 @@ struct BatchStepParser {
             return try await parseCommand(KeySequence.self, arguments: arguments, context: context, logger: logger)
         case .keyCombo:
             return try await parseCommand(KeyCombo.self, arguments: arguments, context: context, logger: logger)
+        case .hinge:
+            return [.deviceState(try parseHinge(arguments))]
+        case .rotate:
+            return [.deviceState(try parseRotate(arguments))]
         case .sleep:
             return []
         }
+    }
+
+    static let hingeStepFormat = "Hinge step format: hinge <set <degrees>|open|close|half> [--duration <s>] [--no-wait]"
+
+    /// Parses `hinge set|open|close|half` with the `axe hinge` parser; `sweep` and `get` are not steps.
+    private static func parseHinge(_ arguments: [String]) throws -> DeviceStateAction {
+        let parsed: ParsableCommand
+        do {
+            parsed = try Hinge.parseAsRoot(arguments)
+        } catch {
+            throw ValidationError("\(hingeStepFormat). \(Hinge.message(for: error))")
+        }
+        guard let moving = parsed as? any HingeMoving, !(parsed is Hinge.Sweep) else {
+            throw ValidationError(hingeStepFormat)
+        }
+        if moving.options.json {
+            throw ValidationError("--json is not supported in batch hinge steps.")
+        }
+        return moving.action
+    }
+
+    static let rotateStepFormat = "Rotate step format: rotate <portrait|landscape|portrait-upside-down|landscape-flipped>"
+
+    private static func parseRotate(_ arguments: [String]) throws -> DeviceStateAction {
+        let rotate: Rotate
+        do {
+            rotate = try Rotate.parse(arguments)
+        } catch {
+            throw ValidationError("\(rotateStepFormat). \(Rotate.message(for: error))")
+        }
+        if rotate.json {
+            throw ValidationError("--json is not supported in batch rotate steps.")
+        }
+        return .rotate(rotate.orientation)
     }
 
     private static func parseCommand<C: AsyncParsableCommand & BatchConvertible>(
