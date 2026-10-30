@@ -25,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fixed the release smoke test failing on macOS runners that refuse unsigned frameworks: it now ad-hoc signs the extracted copy of the unsigned Homebrew archive before running it.
 - Fixed one-shot touch commands (`tap`, `swipe`, `drag`, `gesture`, and the first touch of a `batch`) on Xcode 27 simulators silently losing the touch. The simulator's `dtuhidd` needs about 0.2 s to set up input services for a new connection and AXe disconnected before that; the HID transport now waits for the session before the first event (`FB_DTUHID_READINESS_MS`, default 400). Previously only `--tap-style physical` was reliable. The fix lives in the pinned IDB fork, which now also accepts a target display for touches.
 - Fixed `axe screenshot` on foldable simulators capturing the inner display even while the cover display was active, which produced a black image when folded. `record-video` had the same problem (see Added).
 - Fixed touch commands (`tap`, `swipe`, `drag`, `slider`, `gesture`, `touch`, and batch touch steps) reporting success without delivering input on a foldable simulator whose inner display is active; they are now delivered to the active display (see Added). Coordinates on the inner display take its orientation and size from devicectl instead of the cover screen. The `axe touch` hid-broker uses a new protocol version, so a broker started by an earlier AXe version is never reused.
