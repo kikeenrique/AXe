@@ -11,6 +11,10 @@ struct Batch: AsyncParsableCommand {
         Supported step commands:
           tap, swipe, gesture, touch, type, button, key, key-sequence, key-combo
 
+        Device-state steps (barriers; later steps re-read display and accessibility state):
+          hinge <set <degrees>|open|close|half> [--duration <s>] [--no-wait]
+          rotate <portrait|landscape|portrait-upside-down|landscape-flipped>
+
         Batch-only pseudo-step:
           sleep <seconds>
 
@@ -101,7 +105,7 @@ struct Batch: AsyncParsableCommand {
         }
 
         let session = try await HIDInteractor.makeSession(for: simulatorUDID, logger: logger)
-        let runner = BatchPlanRunner(session: session, logger: logger)
+        let runner = BatchPlanRunner(session: session, logger: logger, context: context)
 
         var failures: [String] = []
 
@@ -119,10 +123,11 @@ struct Batch: AsyncParsableCommand {
                 )
                 try await runner.run(BatchPlan(primitives: primitives))
             } catch {
+                let message = Self.stepFailureMessage(for: error)
                 if continueOnError {
-                    failures.append("Step \(index + 1) failed: [\(stepName)] -> \(error.localizedDescription)")
+                    failures.append("Step \(index + 1) failed: [\(stepName)] -> \(message)")
                 } else {
-                    throw CLIError(errorDescription: "Step \(index + 1) failed: [\(stepName)]\n\(error.localizedDescription)")
+                    throw CLIError(errorDescription: "Step \(index + 1) failed: [\(stepName)]\n\(message)")
                 }
             }
         }
@@ -133,6 +138,21 @@ struct Batch: AsyncParsableCommand {
         }
 
         print("✓ Batch completed successfully (\(stepLines.count) steps)")
+    }
+
+    /// The user-facing text of a step failure. ArgumentParser errors are not `LocalizedError`, so
+    /// `localizedDescription` would print a generic "operation couldn't be completed" message.
+    static func stepFailureMessage(for error: Error) -> String {
+        if let error = error as? CLIError {
+            return error.message
+        }
+        if let error = error as? ValidationError {
+            return error.message
+        }
+        if let localized = error as? LocalizedError, localized.errorDescription != nil {
+            return error.localizedDescription
+        }
+        return Batch.message(for: error)
     }
 
     /// Clears cached simulator display state so each step sees the current fold state. A foldable can

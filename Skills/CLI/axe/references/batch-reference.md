@@ -13,6 +13,10 @@ Use this reference when generating or reviewing `axe batch` commands.
 - `key-sequence`
 - `key-combo`
 - `sleep <seconds>` (batch pseudo-step)
+- `hinge <set <degrees>|open|close|half> [--duration <s>] [--no-wait]` (foldable simulators)
+- `rotate <portrait|landscape|portrait-upside-down|landscape-flipped>`
+
+`hinge` and `rotate` are barrier steps: earlier steps finish first, and later steps re-read display state and the accessibility tree (the cached snapshot from `--ax-cache perBatch` is dropped). `hinge sweep`, `hinge get` and `--json` are not available as steps.
 
 ## Batch flags
 - `--udid <UDID>`: required simulator target.
@@ -102,3 +106,19 @@ axe batch --udid SIMULATOR_UDID \
 Batch selector taps share direct `axe tap` behavior. If the matched row or label contains exactly one UIKit `UISwitch` or SwiftUI `Toggle`/switch control, AXe taps that control's activation point. With default `--tap-style automatic`, switch/toggle activations use physical touch down/up and normal taps use simulator `tapAt`.
 
 If label selectors are ambiguous and AXe reports no `AXUniqueId` values for matches, switch that step to coordinates (`tap -x/-y`). For coordinate taps that need physical touch, use `tap -x/-y --tap-style physical` or batch-level `--tap-style physical`.
+
+## Foldable simulators (iPhone Duo)
+- Display state is re-read at every step, so a fold during a `sleep` or element wait is picked up.
+- While the inner display is active, touch steps (`tap`, `swipe`, `gesture`, `touch`) fail with the inner-display error. With `--continue-on-error`, every later touch step fails the same way until the simulator is folded; the error is not transient.
+- `type`, `key`, `key-sequence`, `key-combo` and `button` steps are not affected.
+- While the cover display is active, default-style tap steps exit 0 without effect; use batch-level `--tap-style physical` (or `tap ... --tap-style physical` per step).
+- `hinge` and `rotate` step argument errors, like other step errors, are reported with the parser's message.
+- Fold first so touches reach the cover display, then check the result with `axe posture` and `axe screenshot` after the batch:
+
+```bash
+axe batch --udid SIMULATOR_UDID \
+  --tap-style physical \
+  --step "hinge close" \
+  --step "tap --id SaveButton" \
+  --step "hinge open"
+```

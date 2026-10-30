@@ -10,12 +10,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Added `axe screenshot --display auto|cover|inner|<id>|<name>` to choose the captured display. `auto` (default) captures the active display; on foldable simulators (iPhone Duo) the display state is read with `xcrun devicectl`, which non-foldable simulators never run. Set `AXE_DISPLAY_PROBE=auto|always|never` to override when display detection runs.
+- Added `axe hinge set|open|close|half|sweep|get` for foldable simulators (iPhone Duo, Xcode 27.1 or later). Every change sweeps from the current angle (never an instant jump), confirms the angle the simulator reports, and waits for the cover or inner display to become active. Based on [hinge](https://github.com/artemnovichkov/hinge) by Artem Novichkov and [duoctl](https://github.com/skarol/duoctl) by Karolina Samorek; AXe builds a small in-simulator helper on first use and caches it under `~/Library/Caches/AXe/sim-helper`.
+- Added `axe posture` to print the hinge angle, the active display, and each display's rotation, interface orientation and size in points, as text or `--json`. Works on any simulator; the hinge angle is `null` without a hinge.
+- Added `axe rotate portrait|landscape|portrait-upside-down|landscape-flipped` to rotate the interface of the active display, verified by the display rotation devicectl reports. Other simulators use `devicectl device orientation set` and print a warning when the foreground interface does not rotate.
+- Added `hinge` and `rotate` batch steps. They run as barriers and make later steps re-read display and accessibility state.
 
 ### Fixed
 
-- Fixed `axe screenshot` on foldable simulators capturing the inner display even while the cover display was active, which produced a black image when folded.
-- Fixed touch commands (`tap`, `swipe`, `drag`, `slider`, `gesture`, `touch`, and batch touch steps) reporting success without delivering input on a foldable simulator whose inner display is active. They now fail with an explicit error until inner-display touch delivery is supported. Coordinate detection on that display now reads its orientation and size from devicectl instead of the cover screen.
-- Fixed AXe errors that are wrapped in another message, such as `axe batch` step failures, showing a generic system message instead of the underlying AXe error.
+- Fixed `axe screenshot` on foldable simulators capturing the inner display even while the cover display was active, which produced a black image when folded. `record-video` and `stream-video` still read the inner display's framebuffer, which is black or the wrong display while folded.
+- Fixed touch commands (`tap`, `swipe`, `drag`, `slider`, `gesture`, `touch`, and batch touch steps) reporting success without delivering input on a foldable simulator whose inner display is active. They now fail with an explicit error until inner-display touch delivery is supported. Coordinate detection on that display now reads its orientation and size from devicectl instead of the cover screen. After upgrading, an `axe touch` hid-broker started by a previous AXe version can keep answering for up to 60 seconds without this check. Known issue: while the cover display is active, default-style taps (simulator `tapAt`) report success without effect; use `--tap-style physical` there.
+- Fixed AXe errors that are wrapped in another message, such as `axe batch` step failures, showing a generic system message instead of the underlying AXe error. Batch step argument errors now show the parser's message instead of "The operation couldn't be completed".
 
 ## [v1.8.0] - 2026-07-20
 

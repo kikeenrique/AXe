@@ -1,4 +1,3 @@
-import Darwin
 import Foundation
 import FBControlCore
 import FBSimulatorControl
@@ -417,7 +416,7 @@ enum DisplayProbePolicy: String, Codable {
 /// touchscreen. On an unfolded foldable the inner display is active, and touches would report
 /// success without any effect. Until inner-display routing exists, such touches fail.
 enum FoldableTouchGuard {
-    static let innerDisplayMessage = "AXe cannot deliver touches to the inner display of a foldable simulator yet. Fold the simulator so the cover display is active, or wait for inner-display support."
+    static let innerDisplayMessage = "AXe cannot deliver touches to the inner display of a foldable simulator yet. Fold the simulator with `axe hinge close` so the cover display is active, or wait for inner-display support."
     static let unknownDisplayMessage = "AXe could not determine which display of the foldable simulator is active, so no touch was sent. Confirm the simulator is booted and try again."
 
     /// Returns the reason touches must not be sent, or `nil` when they can be delivered.
@@ -468,9 +467,9 @@ extension FBSimulatorHIDEvent {
 /// the HID broker calls it per request and `axe batch` per step.
 @MainActor
 enum SimulatorDisplays {
-    static let foldableDeviceTypeMarker = "iPhone-Duo"
-    static let devicectlTimeout: TimeInterval = 10
-    static let screenshotTimeout: TimeInterval = 10
+    nonisolated static let foldableDeviceTypeMarker = "iPhone-Duo"
+    nonisolated static let devicectlTimeout: TimeInterval = 10
+    nonisolated static let screenshotTimeout: TimeInterval = 10
 
     /// Policy supplied by a client process. The hid-broker sets it per request so a long-lived
     /// broker follows the `AXE_DISPLAY_PROBE` value of the command it serves, not its own.
@@ -681,163 +680,6 @@ enum SimulatorDisplays {
             throw CLIError(
                 errorDescription: "AXe could not capture display \(display) of simulator \(simulatorUDID)" + (detail.isEmpty ? "." : ": \(detail)")
             )
-        }
-    }
-}
-
-// MARK: - Process Execution
-
-struct ProcessResult {
-    let status: Int32
-    let standardOutput: Data
-    let standardError: Data
-
-    /// The most useful one-line explanation of a failed xcrun tool, for error messages.
-    var failureDetail: String {
-        XcrunFailureDetail.summary(standardOutput: standardOutput, standardError: standardError)
-    }
-}
-
-enum XcrunFailureDetail {
-    /// Extracts the failure reason from devicectl or simctl output.
-    ///
-    /// Order: `error.userInfo.NSLocalizedDescription` from a devicectl JSON envelope (stdout or
-    /// stderr); the first stderr line starting with `ERROR:` or `Error:`, without the prefix; the
-    /// first non-empty stderr line. simctl prints progress such as "Detected file type" first and
-    /// a bare "Invalid argument" last, so neither end of stderr is reliable on its own.
-    static func summary(standardOutput: Data, standardError: Data) -> String {
-        if let message = jsonErrorDescription(in: standardOutput) ?? jsonErrorDescription(in: standardError) {
-            return message
-        }
-        let lines = String(decoding: standardError, as: UTF8.self)
-            .split(whereSeparator: \.isNewline)
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.isEmpty }
-        for prefix in ["ERROR:", "Error:"] {
-            if let line = lines.first(where: { $0.hasPrefix(prefix) }) {
-                return line.dropFirst(prefix.count).trimmingCharacters(in: .whitespaces)
-            }
-        }
-        return lines.first ?? ""
-    }
-
-    private struct ErrorEnvelope: Decodable {
-        let error: DeviceCtlErrorPayload?
-    }
-
-    private static func jsonErrorDescription(in data: Data) -> String? {
-        let text = String(decoding: data, as: UTF8.self)
-        guard let start = text.firstIndex(of: "{"), let end = text.lastIndex(of: "}"), start < end else {
-            return nil
-        }
-        let json = Data(text[start...end].utf8)
-        guard let message = (try? JSONDecoder().decode(ErrorEnvelope.self, from: json))?.error?.localizedDescription,
-              !message.isEmpty else {
-            return nil
-        }
-        return message
-    }
-}
-
-enum XcrunProcess {
-    /// Maximum time to wait for pipe EOF after the child exits. A descendant that inherited the
-    /// pipe write ends must not turn the bounded timeout into an unbounded wait.
-    static let pipeDrainTimeout: TimeInterval = 1
-
-    static func run(_ arguments: [String], timeout: TimeInterval) async throws -> ProcessResult {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/xcrun")
-        process.arguments = arguments
-        process.standardInput = FileHandle.nullDevice
-        let outputPipe = Pipe()
-        let errorPipe = Pipe()
-        process.standardOutput = outputPipe
-        process.standardError = errorPipe
-
-        // Drain both pipes as data arrives so a large payload cannot block the child.
-        let output = PipeCollector(outputPipe.fileHandleForReading)
-        let errors = PipeCollector(errorPipe.fileHandleForReading)
-        defer {
-            output.stop()
-            errors.stop()
-        }
-
-        try process.run()
-
-        let deadline = Date().addingTimeInterval(timeout)
-        while process.isRunning, Date() < deadline {
-            try? await Task.sleep(for: .milliseconds(10))
-        }
-        if process.isRunning {
-            process.terminate()
-            let terminateDeadline = Date().addingTimeInterval(0.5)
-            while process.isRunning, Date() < terminateDeadline {
-                try? await Task.sleep(for: .milliseconds(10))
-            }
-            if process.isRunning {
-                kill(process.processIdentifier, SIGKILL)
-            }
-            process.waitUntilExit()
-            throw CLIError(errorDescription: "xcrun \(arguments.first ?? "") timed out after \(Int(timeout)) seconds.")
-        }
-        process.waitUntilExit()
-
-        let drainDeadline = Date().addingTimeInterval(pipeDrainTimeout)
-        while !(output.isFinished && errors.isFinished), Date() < drainDeadline {
-            try? await Task.sleep(for: .milliseconds(5))
-        }
-
-        return ProcessResult(
-            status: process.terminationStatus,
-            standardOutput: output.data,
-            standardError: errors.data
-        )
-    }
-}
-
-/// Collects a pipe's output through `readabilityHandler`, without blocking a thread on the read.
-final class PipeCollector: @unchecked Sendable {
-    private let handle: FileHandle
-    private let lock = NSLock()
-    private var buffer = Data()
-    private var finished = false
-
-    init(_ handle: FileHandle) {
-        self.handle = handle
-        handle.readabilityHandler = { [weak self] readable in
-            let chunk = readable.availableData
-            if chunk.isEmpty {
-                readable.readabilityHandler = nil
-            }
-            self?.append(chunk)
-        }
-    }
-
-    var isFinished: Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return finished
-    }
-
-    var data: Data {
-        lock.lock()
-        defer { lock.unlock() }
-        return buffer
-    }
-
-    /// Detaches the handler and closes the read end. Safe to call more than once.
-    func stop() {
-        handle.readabilityHandler = nil
-        try? handle.close()
-    }
-
-    private func append(_ chunk: Data) {
-        lock.lock()
-        defer { lock.unlock() }
-        if chunk.isEmpty {
-            finished = true
-        } else {
-            buffer.append(chunk)
         }
     }
 }

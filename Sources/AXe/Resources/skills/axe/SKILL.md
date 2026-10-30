@@ -1,17 +1,18 @@
 ---
 name: axe
-description: Provides agent-ready AXe CLI usage guidance for iOS Simulator automation. Use when asked to "use AXe", "automate a simulator", "tap/swipe/type on simulator", "set a slider", "describe UI", "take a screenshot", "record video", "batch steps", or "interact with an iOS app". Covers all commands including touch, gestures, sliders, text input, keyboard, buttons, accessibility, screenshots, video, and batch workflows.
+description: Provides agent-ready AXe CLI usage guidance for iOS Simulator automation. Use when asked to "use AXe", "automate a simulator", "tap/swipe/type on simulator", "set a slider", "describe UI", "take a screenshot", "record video", "batch steps", "interact with an iOS app", or "fold/unfold/rotate a simulator". Covers all commands including touch, gestures, sliders, text input, keyboard, buttons, accessibility, screenshots, video, batch workflows, and foldable simulators (iPhone Duo hinge, posture, rotation).
 ---
 
 ## Step 1: Confirm runtime context
 1. Identify simulator UDID target first (`axe list-simulators`).
 2. Simulator-interaction AXe commands require `--udid <UDID>`. Commands like `list-simulators` and `init` do not.
 3. Run `axe describe-ui --udid <UDID>` to inspect the full current screen. Use `axe describe-ui --point <X,Y> --udid <UDID>` to inspect the element at a specific coordinate. Use the output to discover available `--id` and `--label` values for selector taps and slider setting, and to confirm coordinates for coordinate-based taps.
+   On a foldable simulator (iPhone Duo) run `axe posture --udid <UDID>` first. While the inner display is active, `describe-ui` reports both displays' windows with frames in the inner display's native portrait points, labels and IDs can match twice, and `--point` hit-tests the cover display only; rely on `axe screenshot` and `axe posture` there. On the folded cover, home-screen frames can also differ from the visible layout, so confirm targets with a screenshot.
 4. Prefer selectors (`tap --id` / `tap --label`, `slider --id` / `slider --label`) over raw coordinates. Selectors are resilient to layout changes, work across device sizes, and support element waiting where documented. For UIKit `UISwitch` and SwiftUI `Toggle` rows, selector taps activate the contained switch/toggle when the match contains exactly one such control. Default tap style is `automatic`: switches/toggles use physical touch down/up, while normal taps use simulator `tapAt`.
 
 ## Step 2: Choose the right command
 
-Available commands: `init`, `tap`, `slider`, `swipe`, `drag`, `gesture`, `touch`, `type`, `button`, `key`, `key-sequence`, `key-combo`, `batch`, `describe-ui`, `screenshot`, `record-video`, `stream-video`, `list-simulators`. Run `axe --help` or `axe <command> --help` for full options.
+Available commands: `init`, `tap`, `slider`, `swipe`, `drag`, `gesture`, `touch`, `type`, `button`, `key`, `key-sequence`, `key-combo`, `batch`, `describe-ui`, `screenshot`, `record-video`, `stream-video`, `hinge`, `posture`, `rotate`, `list-simulators`. Run `axe --help` or `axe <command> --help` for full options.
 
 Common examples:
 ```bash
@@ -27,6 +28,11 @@ axe type 'text' --udid <UDID>
 axe describe-ui --udid <UDID>
 axe describe-ui --point <X,Y> --udid <UDID>
 axe screenshot --udid <UDID> --output screenshot.png
+axe screenshot --display cover --udid <UDID> --output cover.png
+axe hinge close --udid <UDID>
+axe hinge open --udid <UDID>
+axe posture --json --udid <UDID>
+axe rotate portrait --udid <UDID>
 ```
 
 ## Step 3: Understand the execution model
@@ -39,7 +45,9 @@ Most HID commands (`tap`, `swipe`, `drag`, `type`, `key`, etc.) are fire-and-for
 - Use `--pre-delay` / `--post-delay` on tap, swipe, and gesture commands for fixed delays around actions.
 - Use `--duration` to control how long a swipe, gesture, button press, or key press lasts.
 - Coordinate-based `tap`, `swipe`, `drag`, and `touch` accept coordinates from `describe-ui` directly; AXe detects rotated landscape simulator orientation and letterboxed landscape-only app layouts automatically.
-- Foldable simulators (iPhone Duo): `screenshot` captures the active display (`--display auto`, the default); pass `--display cover|inner|<id>|<name>` to choose. Touch commands fail with an explicit error while the inner display is active; they work while the cover display is active. Do not treat that error as transient or retry it.
+- Foldable simulators (iPhone Duo): `screenshot` captures the active display (`--display auto`, the default); pass `--display cover|inner|<id>|<name>` to choose. Touch commands fail with an explicit error while the inner display is active. Do not treat that error as transient or retry it. While the cover display is active, always pass `--tap-style physical` to `tap` (or batch-level `--tap-style physical`): default-style taps exit 0 there without any effect, on the home screen and inside apps.
+- Fold with `axe hinge close|open|half|set <degrees>`. The command waits for the expected display (cover at 30 degrees or less, inner at 120 or more) and fails if it does not switch; between those angles either display can be active. Always run `axe posture` after a fold before touching or capturing, and remember `screenshot` captures the active display. If the display stops following the hinge, the simulator must be shut down and booted again.
+- `axe rotate portrait|landscape|portrait-upside-down|landscape-flipped` rotates the active display's interface and verifies it; when the foreground app or screen does not rotate it prints a warning instead of "Rotated to". `record-video` and `stream-video` still capture the inner display on foldables.
 - Use `axe slider --id <identifier> --value <0-100>` for sliders instead of approximating with raw swipe coordinates; it uses one calibrated low-level HID drag from the resolved slider frame/current AXValue, through the same composite touch-move path as `drag`, verifies the result within tolerance, and fails clearly if the observed AXValue remains outside tolerance.
 - For text with shell-sensitive characters, prefer `--stdin` or `--file` over inline quotes.
 - Use single quotes for inline text arguments to avoid shell expansion issues.
@@ -69,6 +77,7 @@ Key rules:
 - Steps run in order; default is fail-fast.
 - Add `--continue-on-error` for best-effort execution.
 - Do not pass `--udid` inside step lines; keep it at batch level.
+- `hinge <set <degrees>|open|close|half>` and `rotate <orientation>` steps are barriers; later steps re-read display and accessibility state. On a folded foldable, run the batch with `--tap-style physical`.
 
 ## Step 6: Verify outcomes
 Batch and individual commands are execution-focused, not assertion-focused. Always suggest verification when outcomes matter:
@@ -79,6 +88,8 @@ axe describe-ui --point <X,Y> --udid <UDID>
 # or
 axe screenshot --udid <UDID> --output post-state.png
 ```
+
+On a foldable, verify with `axe screenshot` and `axe posture --json` rather than `describe-ui` or `describe-ui --point` (see Step 1): with the inner display active the frames are in another coordinate space, and on the folded cover home-screen frames can differ from the visible layout.
 
 ## Step 7: Exit criteria
 Before finalising guidance, verify:

@@ -29,6 +29,8 @@ axe tap -x 320 -y 780 --tap-style physical --udid <UDID>
 axe tap -x 100 -y 200 --pre-delay 1.0 --post-delay 0.5 --udid <UDID>
 ```
 
+Foldable simulators: `tap` fails with the inner-display error while the inner display is active; fold with `axe hinge close` first. While the cover display is active, pass `--tap-style physical`: default-style taps exit 0 there without effect.
+
 ## Slider
 
 ```bash
@@ -51,6 +53,8 @@ axe swipe --start-x 50 --start-y 500 --end-x 350 --end-y 500 --duration 2.0 --de
 axe swipe --start-x 100 --start-y 300 --end-x 300 --end-y 100 --pre-delay 1.0 --post-delay 0.5 --udid <UDID>
 ```
 
+Foldable simulators: `swipe` (and `drag`, `slider`, `gesture`) fails with the inner-display error while the inner display is active.
+
 ## Drag (low-level)
 
 ```bash
@@ -68,6 +72,8 @@ axe touch -x 150 -y 250 --up --udid <UDID>                            # Touch up
 axe touch -x 150 -y 250 --down --up --udid <UDID>                     # Tap
 axe touch -x 150 -y 250 --down --up --delay 1.0 --udid <UDID>        # Long press
 ```
+
+Foldable simulators: `touch` fails with the inner-display error while the inner display is active.
 
 ## Gesture presets
 
@@ -194,9 +200,16 @@ axe batch --udid <UDID> \
 # Toggle a setting switch by label
 axe batch --udid <UDID> \
   --step "tap --label 'Weather Alerts'"
+
+# Foldable: fold, act on the cover display, unfold (barrier steps)
+axe batch --udid <UDID> \
+  --tap-style physical \
+  --step "hinge close" \
+  --step "tap --id SaveButton" \
+  --step "hinge open"
 ```
 
-See `batch-reference.md` for full batch semantics.
+See `batch-reference.md` for full batch semantics. Foldable simulators: touch steps fail with the inner-display error while the inner display is active, also under `--continue-on-error`; on the cover use batch-level `--tap-style physical`; `hinge` and `rotate` steps re-read display and accessibility state for later steps.
 
 ## Accessibility / UI inspection
 
@@ -204,6 +217,25 @@ See `batch-reference.md` for full batch semantics.
 axe describe-ui --udid <UDID>                      # Full screen
 axe describe-ui --point 100,200 --udid <UDID>      # Specific point
 ```
+
+Foldable simulators: with the inner display active, `describe-ui` reports the windows of both displays with frames in the inner display's native portrait points, and labels or identifiers can match twice. `--point` hit-tests the cover display only. On the folded cover, home-screen frames can also differ from the visible layout. Verify with `axe screenshot` and `axe posture` instead.
+
+## Foldable simulators (hinge, posture, rotate)
+
+```bash
+axe hinge close --udid <UDID>                      # 0 degrees: cover display active
+axe hinge open --duration 1.5 --udid <UDID>        # 180 degrees, animated: inner display active
+axe hinge half --udid <UDID>                       # 90 degrees (Device Hub's preset is 130)
+axe hinge set 130 --udid <UDID>                    # Any angle from 0 to 180
+axe hinge sweep 180 0 --duration 2 --udid <UDID>   # Animate between two angles
+axe hinge open --no-wait --udid <UDID>             # Skip the display-switch wait
+axe hinge get --udid <UDID>                        # Print the reported angle
+axe posture --udid <UDID>                          # Angle, active display, rotation, size
+axe posture --json --udid <UDID>                   # Same as JSON; hingeAngle is null without a hinge
+axe rotate portrait --udid <UDID>                  # portrait|landscape|portrait-upside-down|landscape-flipped
+```
+
+`hinge` sweeps from the current angle (from the opposite end when it cannot be read) over at least 0.4 s and at most `--duration 30`, confirms the reported angle, then waits up to 8 s for the cover (at most 30 degrees) or inner (at least 120 degrees) display; between those angles either display can be active. `hinge sweep <from> <to>` first sweeps to `<from>` when the hinge is elsewhere. `hinge`, `rotate` and `posture` print the resulting posture (`--json` for JSON). `rotate` names the interface orientation of the active display; on foldables AXe tries device orientations until the active display reports it and restores the starting orientation if none does; elsewhere it uses `devicectl device orientation set` and warns (without "Rotated to") when the foreground app or screen does not rotate. `posture` works on any simulator. `hinge` fails at once with "reports no hinge" on simulators without one.
 
 ## Screenshot
 
@@ -234,6 +266,8 @@ axe stream-video --udid <UDID> --fps 10 --format mjpeg > stream.mjpeg
 axe stream-video --udid <UDID> --fps 30 --format ffmpeg | \
   ffmpeg -f image2pipe -framerate 30 -i - -c:v libx264 -preset ultrafast output.mp4
 ```
+
+Foldable simulators: `record-video` and `stream-video` capture the inner display's framebuffer whatever the posture, so they are black or show the wrong display while folded. Use `axe screenshot` for the active display.
 
 ## Timing parameters
 
