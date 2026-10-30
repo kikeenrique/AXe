@@ -164,6 +164,27 @@ smoke_test_stage() {
   echo "✅ Smoke-tested staged payload"
 }
 
+# The Homebrew archive is unsigned by design (create-homebrew-archive strips every
+# signature) and the formula's post_install re-signs it ad hoc on install. Running it
+# raw fails on newer macOS, where dyld refuses to load the unsigned frameworks. Mirror
+# post_install on the extracted copy only: frameworks first, then axe, same flags.
+# Archives whose axe already verifies (the universal archive) are left untouched.
+adhoc_sign_unsigned_stage() {
+  local stage_dir="$1"
+  local framework_path
+
+  if codesign --verify --strict "$stage_dir/axe" >/dev/null 2>&1; then
+    return 0
+  fi
+
+  for framework_path in "$stage_dir"/Frameworks/*.framework; do
+    [[ -d "$framework_path" ]] || continue
+    codesign --force --sign - --timestamp=none "$framework_path"
+  done
+  codesign --force --sign - --timestamp=none "$stage_dir/axe"
+  echo "Archive is unsigned; ad-hoc signed the extracted copy for the smoke test"
+}
+
 smoke_test_archive() {
   local archive_path="$1"
   local stage_dir
@@ -173,6 +194,7 @@ smoke_test_archive() {
   stage_dir="$(mktemp -d "${TMPDIR:-/tmp}/axe-release-smoke.XXXXXX")"
 
   tar -xzf "$archive_path" -C "$stage_dir"
+  adhoc_sign_unsigned_stage "$stage_dir"
   smoke_test_stage "$stage_dir"
   rm -rf "$stage_dir"
   echo "✅ Smoke-tested archive: $archive_path"
