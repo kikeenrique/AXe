@@ -35,24 +35,25 @@ AXe builds IDB from the immutable fork revision configured in `scripts/build.sh`
 
 ### Foldable simulators
 
-On foldable simulators (iPhone Duo, Xcode 27.1 or later), AXe reads which display is active with `xcrun devicectl device info displays`. Other simulators never run this probe; set `AXE_DISPLAY_PROBE=always` or `AXE_DISPLAY_PROBE=never` to override.
+On foldable simulators (iPhone Duo, Xcode 27.1 or later), AXe reads which display is active with `xcrun devicectl device info displays`. Other simulators never run this probe; set `AXE_DISPLAY_PROBE=always` or `AXE_DISPLAY_PROBE=never` to override. `never` also disables touch routing on a foldable: touches go to the cover display even while the inner display is active, and touch commands print a warning.
 
 - `axe screenshot` captures the active display by default. Use `--display cover`, `--display inner`, a display ID, or a display name to pick one. simctl returns the captured display rotated to its current UI orientation.
-- While the inner display is active, touch commands fail with an error, because AXe cannot deliver touches to the inner display yet. Keyboard, text, and hardware-button commands are not affected.
-- While the cover display is active, use `--tap-style physical` for `tap` (and batch-level `--tap-style physical`). Default-style taps (simulator `tapAt`) exit 0 without any effect on the folded cover, on the home screen and inside apps; physical touch down/up works. The cause is not known yet.
+- Touch commands (`tap`, `swipe`, `drag`, `gesture`, `slider`, `touch`, and batch steps) follow the active display, folded or unfolded. Coordinates are interface points of the active display, as `axe screenshot` shows it (pixels divided by the scale, 3 on the iPhone Duo): the unfolded inner display in landscape is 951x669 points. AXe converts them to the display's native orientation; a point outside the display fails without sending anything. Touches fail with an error only when AXe cannot determine the active display, or when the inner display is active and the simulator uses the legacy Indigo input transport.
+- The first touch of a command waits for the simulator's input session (400 ms by default). On a heavily loaded host the session can take longer and a tap can be lost while the command reports success; set `FB_DTUHID_READINESS_MS` (up to 2000) to wait longer. It is read by the process that sends the input; an `axe touch` broker keeps the value it started with.
 - `axe hinge close|open|half|set <degrees>` folds and unfolds the simulator. Each change sweeps from the current angle (from the opposite end when the angle cannot be read), confirms the angle the simulator reports, and waits up to 8 s for the cover (at most 30 degrees) or inner (at least 120 degrees) display to become active. `axe hinge sweep <from> <to>` first sweeps to `<from>` when the hinge is elsewhere. `axe hinge get` prints the angle. Hinge commands fail at once on simulators without a hinge.
 - `axe posture` prints the hinge angle, the active display, and each display's rotation, interface orientation and size in points; add `--json` for scripts. Check it after every fold: the angle and the active display are separate states.
 - `axe rotate portrait|landscape|portrait-upside-down|landscape-flipped` rotates the interface of the active display and verifies the display rotation. It also works on other simulators through `devicectl device orientation set`; when the foreground app or screen does not rotate (for example an iPhone home screen), it prints a warning instead of "Rotated to".
 - `record-video` and `stream-video` still capture the inner display's framebuffer, so they record a black or wrong display while folded.
-- `describe-ui` on the inner display reports the windows of both displays, with frames in the inner display's native portrait points, and every home-screen label or identifier matches twice. `describe-ui --point` hit-tests the cover display only. On the folded cover, home-screen frames can also differ from the visible layout. Verify state with `axe screenshot` (the active display, rotated to its UI orientation) and `axe posture`.
+- `describe-ui` on the inner display can list the windows of both displays: on the home screen, every label or identifier appears twice, with frames in the inner display's native portrait points. Selectors (`tap --label/--id/--value`, `slider`) resolve against the active display's windows only and tap where the element is on screen. `describe-ui` output itself is unchanged, and `describe-ui --point` hit-tests the cover display only. On the folded cover, home-screen frames can also differ from the visible layout. Verify state with `axe screenshot` (the active display, rotated to its UI orientation) and `axe posture`.
 - Hinge and rotation use private Device Hub events through a small helper that AXe compiles on first use with the selected Xcode and caches in `~/Library/Caches/AXe/sim-helper`. If the active display stops following the hinge, shut the simulator down and boot it again.
 
 ```bash
 axe hinge close --udid "$UDID"          # fold: the cover display becomes active
 axe posture --udid "$UDID"              # angle, active display, orientation, size
 axe screenshot --output ./cover.png --udid "$UDID"
-axe tap -x 200 -y 300 --tap-style physical --udid "$UDID"   # taps on the cover: physical style
+axe tap -x 200 -y 300 --udid "$UDID"   # taps the cover
 axe hinge open --udid "$UDID"           # unfold flat: the inner display becomes active
+axe tap --label Settings --udid "$UDID" # taps the inner display
 axe rotate portrait --udid "$UDID"      # rotate the active display's interface
 ```
 

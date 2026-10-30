@@ -108,17 +108,17 @@ Batch selector taps share direct `axe tap` behavior. If the matched row or label
 If label selectors are ambiguous and AXe reports no `AXUniqueId` values for matches, switch that step to coordinates (`tap -x/-y`). For coordinate taps that need physical touch, use `tap -x/-y --tap-style physical` or batch-level `--tap-style physical`.
 
 ## Foldable simulators (iPhone Duo)
-- Display state is re-read at every step, so a fold during a `sleep` or element wait is picked up.
-- While the inner display is active, touch steps (`tap`, `swipe`, `gesture`, `touch`) fail with the inner-display error. With `--continue-on-error`, every later touch step fails the same way until the simulator is folded; the error is not transient.
-- `type`, `key`, `key-sequence`, `key-combo` and `button` steps are not affected.
-- While the cover display is active, default-style tap steps exit 0 without effect; use batch-level `--tap-style physical` (or `tap ... --tap-style physical` per step).
+- Display state is re-read at every step, so a fold during a `sleep` or element wait is picked up, and touch steps (`tap`, `swipe`, `gesture`, `touch`) go to the display that is active when the step runs.
+- Coordinates are interface points of the active display as `axe screenshot` shows it; after a `hinge` or `rotate` step they refer to the new display or orientation. Selector taps resolve against the active display's windows only.
+- Touch steps fail only when the active display cannot be determined, or when the inner display is active on the legacy Indigo input transport.
 - `hinge` and `rotate` step argument errors, like other step errors, are reported with the parser's message.
-- Fold first so touches reach the cover display, then check the result with `axe posture` and `axe screenshot` after the batch:
+- Check the result with `axe posture` and `axe screenshot` after the batch:
 
 ```bash
 axe batch --udid SIMULATOR_UDID \
-  --tap-style physical \
+  --step "hinge open" \
+  --step "tap --label Settings" \
+  --step "sleep 1" \
   --step "hinge close" \
-  --step "tap --id SaveButton" \
-  --step "hinge open"
+  --step "tap --label General"
 ```

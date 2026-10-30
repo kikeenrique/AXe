@@ -7,7 +7,7 @@ description: Provides agent-ready AXe CLI usage guidance for iOS Simulator autom
 1. Identify simulator UDID target first (`axe list-simulators`).
 2. Simulator-interaction AXe commands require `--udid <UDID>`. Commands like `list-simulators` and `init` do not.
 3. Run `axe describe-ui --udid <UDID>` to inspect the full current screen. Use `axe describe-ui --point <X,Y> --udid <UDID>` to inspect the element at a specific coordinate. Use the output to discover available `--id` and `--label` values for selector taps and slider setting, and to confirm coordinates for coordinate-based taps.
-   On a foldable simulator (iPhone Duo) run `axe posture --udid <UDID>` first. While the inner display is active, `describe-ui` reports both displays' windows with frames in the inner display's native portrait points, labels and IDs can match twice, and `--point` hit-tests the cover display only; rely on `axe screenshot` and `axe posture` there. On the folded cover, home-screen frames can also differ from the visible layout, so confirm targets with a screenshot.
+   On a foldable simulator (iPhone Duo) run `axe posture --udid <UDID>` first. While the inner display is active, `describe-ui` can list both displays' windows (home-screen labels and IDs appear twice, with frames in the inner display's native portrait points) and `--point` hit-tests the cover display only. Selector taps and `slider` still resolve against the active display only, so prefer selectors there; take `-x/-y` from `axe screenshot` (pixels / 3), not from those frames. On the folded cover, home-screen frames can also differ from the visible layout, so confirm targets with a screenshot.
 4. Prefer selectors (`tap --id` / `tap --label`, `slider --id` / `slider --label`) over raw coordinates. Selectors are resilient to layout changes, work across device sizes, and support element waiting where documented. For UIKit `UISwitch` and SwiftUI `Toggle` rows, selector taps activate the contained switch/toggle when the match contains exactly one such control. Default tap style is `automatic`: switches/toggles use physical touch down/up, while normal taps use simulator `tapAt`.
 
 ## Step 2: Choose the right command
@@ -45,7 +45,7 @@ Most HID commands (`tap`, `swipe`, `drag`, `type`, `key`, etc.) are fire-and-for
 - Use `--pre-delay` / `--post-delay` on tap, swipe, and gesture commands for fixed delays around actions.
 - Use `--duration` to control how long a swipe, gesture, button press, or key press lasts.
 - Coordinate-based `tap`, `swipe`, `drag`, and `touch` accept coordinates from `describe-ui` directly; AXe detects rotated landscape simulator orientation and letterboxed landscape-only app layouts automatically.
-- Foldable simulators (iPhone Duo): `screenshot` captures the active display (`--display auto`, the default); pass `--display cover|inner|<id>|<name>` to choose. Touch commands fail with an explicit error while the inner display is active. Do not treat that error as transient or retry it. While the cover display is active, always pass `--tap-style physical` to `tap` (or batch-level `--tap-style physical`): default-style taps exit 0 there without any effect, on the home screen and inside apps.
+- Foldable simulators (iPhone Duo): `screenshot` captures the active display (`--display auto`, the default); pass `--display cover|inner|<id>|<name>` to choose. Touch commands follow the active display, folded or unfolded. Coordinates are interface points of the active display as `axe screenshot` shows it (pixels / 3; the unfolded inner display in landscape is 951x669). A point outside the active display fails without sending anything. Touches fail with an error only when the active display cannot be determined, or when the inner display is active on the legacy Indigo input transport; do not retry those errors unchanged. `AXE_DISPLAY_PROBE=never` sends touches to the cover display even when the inner display is active (AXe warns); do not set it on a foldable. On a heavily loaded host the first touch of a command can be lost while reporting success; verify with a screenshot and set `FB_DTUHID_READINESS_MS` (for example 800) if it recurs.
 - Fold with `axe hinge close|open|half|set <degrees>`. The command waits for the expected display (cover at 30 degrees or less, inner at 120 or more) and fails if it does not switch; between those angles either display can be active. Always run `axe posture` after a fold before touching or capturing, and remember `screenshot` captures the active display. If the display stops following the hinge, the simulator must be shut down and booted again.
 - `axe rotate portrait|landscape|portrait-upside-down|landscape-flipped` rotates the active display's interface and verifies it; when the foreground app or screen does not rotate it prints a warning instead of "Rotated to". `record-video` and `stream-video` still capture the inner display on foldables.
 - Use `axe slider --id <identifier> --value <0-100>` for sliders instead of approximating with raw swipe coordinates; it uses one calibrated low-level HID drag from the resolved slider frame/current AXValue, through the same composite touch-move path as `drag`, verifies the result within tolerance, and fails clearly if the observed AXValue remains outside tolerance.
@@ -77,7 +77,7 @@ Key rules:
 - Steps run in order; default is fail-fast.
 - Add `--continue-on-error` for best-effort execution.
 - Do not pass `--udid` inside step lines; keep it at batch level.
-- `hinge <set <degrees>|open|close|half>` and `rotate <orientation>` steps are barriers; later steps re-read display and accessibility state. On a folded foldable, run the batch with `--tap-style physical`.
+- `hinge <set <degrees>|open|close|half>` and `rotate <orientation>` steps are barriers; later steps re-read display and accessibility state, so touch steps after a fold or rotation go to the newly active display.
 
 ## Step 6: Verify outcomes
 Batch and individual commands are execution-focused, not assertion-focused. Always suggest verification when outcomes matter:
@@ -89,7 +89,7 @@ axe describe-ui --point <X,Y> --udid <UDID>
 axe screenshot --udid <UDID> --output post-state.png
 ```
 
-On a foldable, verify with `axe screenshot` and `axe posture --json` rather than `describe-ui` or `describe-ui --point` (see Step 1): with the inner display active the frames are in another coordinate space, and on the folded cover home-screen frames can differ from the visible layout.
+On a foldable, verify with `axe screenshot` and `axe posture --json` rather than `describe-ui` frames or `describe-ui --point` (see Step 1): with the inner display active, home-screen frames are in the panel's native coordinate space, and on the folded cover home-screen frames can differ from the visible layout.
 
 ## Step 7: Exit criteria
 Before finalising guidance, verify:

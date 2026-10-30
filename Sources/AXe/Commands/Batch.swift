@@ -156,8 +156,8 @@ struct Batch: AsyncParsableCommand {
     }
 
     /// Clears cached simulator display state so each step sees the current fold state. A foldable can
-    /// fold or unfold during a `sleep` step or an element wait; a stale "cover active" state would let
-    /// later touches through the inner-display guard.
+    /// fold or unfold during a `sleep` step or an element wait; a stale state would convert and route
+    /// later touches to the wrong display.
     @MainActor
     static func beginStep() {
         SimulatorDisplays.invalidateCachedState()

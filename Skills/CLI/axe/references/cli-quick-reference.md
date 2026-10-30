@@ -29,7 +29,7 @@ axe tap -x 320 -y 780 --tap-style physical --udid <UDID>
 axe tap -x 100 -y 200 --pre-delay 1.0 --post-delay 0.5 --udid <UDID>
 ```
 
-Foldable simulators: `tap` fails with the inner-display error while the inner display is active; fold with `axe hinge close` first. While the cover display is active, pass `--tap-style physical`: default-style taps exit 0 there without effect.
+Foldable simulators: `tap` goes to the active display, cover or inner. `-x/-y` are interface points of that display as `axe screenshot` shows it (pixels / 3; the unfolded inner display in landscape is 951x669). `--id/--label/--value` resolve against the active display's windows only.
 
 ## Slider
 
@@ -53,7 +53,7 @@ axe swipe --start-x 50 --start-y 500 --end-x 350 --end-y 500 --duration 2.0 --de
 axe swipe --start-x 100 --start-y 300 --end-x 300 --end-y 100 --pre-delay 1.0 --post-delay 0.5 --udid <UDID>
 ```
 
-Foldable simulators: `swipe` (and `drag`, `slider`, `gesture`) fails with the inner-display error while the inner display is active.
+Foldable simulators: `swipe` (and `drag`, `slider`, `gesture`) goes to the active display, with coordinates in its interface points. `gesture` presets default to the active display's size on the inner display.
 
 ## Drag (low-level)
 
@@ -73,7 +73,7 @@ axe touch -x 150 -y 250 --down --up --udid <UDID>                     # Tap
 axe touch -x 150 -y 250 --down --up --delay 1.0 --udid <UDID>        # Long press
 ```
 
-Foldable simulators: `touch` fails with the inner-display error while the inner display is active.
+Foldable simulators: `touch` goes to the active display. If the simulator folds or unfolds between preparing and sending the touch, it fails without sending anything; run it again.
 
 ## Gesture presets
 
@@ -201,15 +201,16 @@ axe batch --udid <UDID> \
 axe batch --udid <UDID> \
   --step "tap --label 'Weather Alerts'"
 
-# Foldable: fold, act on the cover display, unfold (barrier steps)
+# Foldable: act on the inner display, fold, act on the cover display (barrier steps)
 axe batch --udid <UDID> \
-  --tap-style physical \
+  --step "hinge open" \
+  --step "tap --label Settings" \
+  --step "sleep 1" \
   --step "hinge close" \
-  --step "tap --id SaveButton" \
-  --step "hinge open"
+  --step "tap --label General"
 ```
 
-See `batch-reference.md` for full batch semantics. Foldable simulators: touch steps fail with the inner-display error while the inner display is active, also under `--continue-on-error`; on the cover use batch-level `--tap-style physical`; `hinge` and `rotate` steps re-read display and accessibility state for later steps.
+See `batch-reference.md` for full batch semantics. Foldable simulators: touch steps go to the display active when the step runs; `hinge` and `rotate` steps re-read display and accessibility state for later steps.
 
 ## Accessibility / UI inspection
 
@@ -218,7 +219,7 @@ axe describe-ui --udid <UDID>                      # Full screen
 axe describe-ui --point 100,200 --udid <UDID>      # Specific point
 ```
 
-Foldable simulators: with the inner display active, `describe-ui` reports the windows of both displays with frames in the inner display's native portrait points, and labels or identifiers can match twice. `--point` hit-tests the cover display only. On the folded cover, home-screen frames can also differ from the visible layout. Verify with `axe screenshot` and `axe posture` instead.
+Foldable simulators: with the inner display active, `describe-ui` can list the windows of both displays; on the home screen labels and identifiers appear twice, with frames in the inner display's native portrait points. Selector taps resolve against the active display only. `--point` hit-tests the cover display only. On the folded cover, home-screen frames can also differ from the visible layout. Verify with `axe screenshot` and `axe posture` instead.
 
 ## Foldable simulators (hinge, posture, rotate)
 

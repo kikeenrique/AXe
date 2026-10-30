@@ -59,6 +59,8 @@ struct HIDInteractor {
             )
         }
         logger.info().log("Simulator state verified: booted")
+        // Lets later display-state lookups by UDID skip another simulator set.
+        SimulatorDisplays.recordDeviceType(for: simulator)
 
         let bootIdentity = try HIDBroker.currentBootIdentity(simulatorUDID: simulatorUDID)
         let dtuhidProcessIdentifier = FBProcessFetcher().subprocess(
@@ -96,14 +98,17 @@ struct HIDInteractor {
 
     static func performHIDEvent(_ event: FBSimulatorHIDEvent, in session: Session, logger: AxeLogger) async throws {
         // Every touch path (tap, swipe, drag, slider, gesture, batch, and the hid-broker used by
-        // `axe touch`) passes through here. FBSimulatorHID only reaches the primary touchscreen, so
-        // touches aimed at a foldable's inner display would report success without effect.
+        // `axe touch`) passes through here. On a foldable whose active display is not the main one,
+        // touches carry that display's target; the points were converted to its native space by
+        // `OrientationAwareCoordinates`. The target comes from the cached display state, so it is
+        // re-resolved whenever that cache is cleared (each batch step, each broker request).
+        var displayTarget: FBSimulatorHIDDisplayTarget?
         if event.producesTouch {
-            try await FoldableTouchGuard.enforce(for: session.simulator, logger: logger)
+            displayTarget = try await TouchRouting.hidTarget(for: session, logger: logger)
         }
 
         logger.info().log("Performing HID event...")
-        try await session.hid.send(event: event, logger: logger)
+        try await session.hid.send(event: event, target: displayTarget, logger: logger)
         logger.info().log("HID event performed successfully.")
 
         if stabilizationDelayMs > 0 {

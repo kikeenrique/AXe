@@ -1,8 +1,20 @@
 import Darwin
 import Dispatch
+import FBSimulatorControl
 import Foundation
 import Testing
 @testable import AXe
+
+/// The iPhone Duo inner display (2007x2853 px, scale 3) at `rotation`.
+private func innerTarget(_ rotation: SimulatorDisplay.Rotation) -> TouchTarget {
+    TouchTarget(
+        displayID: 3,
+        nativePixelSize: SimulatorDisplay.Size(width: 2007, height: 2853),
+        pointScale: 3,
+        rotation: rotation,
+        isMain: false
+    )
+}
 
 @Suite("HID Broker Tests")
 struct HIDBrokerTests {
@@ -211,7 +223,7 @@ struct HIDBrokerTests {
 
         let result = await HIDBroker.execute(
             request,
-            enforceTouchGuard: { throw CLIError(errorDescription: FoldableTouchGuard.innerDisplayMessage) },
+            enforceTouchGuard: { throw CLIError(errorDescription: HIDBrokerRequest.displayChangedMessage) },
             sendTouch: { _, _, _ in sent += 1 },
             sleep: { _ in slept += 1 }
         )
@@ -219,10 +231,103 @@ struct HIDBrokerTests {
         #expect(sent == 0)
         #expect(slept == 0)
         #expect(result.shouldContinue)
-        #expect(result.error.map(HIDBroker.brokerResponseDescription(for:)) == FoldableTouchGuard.innerDisplayMessage)
+        #expect(result.error.map(HIDBroker.brokerResponseDescription(for:)) == HIDBrokerRequest.displayChangedMessage)
     }
 
-    @Test("Delay-only requests skip the touch guard")
+    @Test("Main-display requests encode without a display or rotation")
+    func mainDisplayRequestOmitsDisplayID() throws {
+        let data = try JSONEncoder().encode(HIDBrokerRequest(primitives: [.touch(.down, x: 1, y: 2)], displayProbe: .auto))
+        let json = String(decoding: data, as: UTF8.self)
+
+        #expect(!json.contains("displayID"))
+        #expect(!json.contains("rotation"))
+    }
+
+    @Test("The broker endpoint is versioned 3, so brokers that predate display routing never answer")
+    func endpointIsVersionThree() throws {
+        let endpoint = try HIDBroker.endpointPath(
+            simulatorUDID: "SIMULATOR_UDID",
+            developerDirectory: FileManager.default.temporaryDirectory.path
+        )
+
+        #expect(endpoint.hasSuffix("-v3.sock"))
+    }
+
+    @Test("Requests carry the display and rotation the points were converted for")
+    func requestCarriesDisplayAndRotation() throws {
+        var descriptors = [Int32](repeating: -1, count: 2)
+        #expect(socketpair(AF_UNIX, SOCK_STREAM, 0, &descriptors) == 0)
+        defer { Darwin.close(descriptors[1]) }
+
+        try HIDBroker.writeAll(Data(#"{"error":null}"#.utf8 + [0x0A]), to: descriptors[1])
+        try HIDBroker.sendTouchPrimitives([.touch(.down, x: 1, y: 2)], displayProbe: .auto, target: innerTarget(.rot90)) {
+            descriptors[0]
+        }
+
+        let request = try JSONDecoder().decode(
+            HIDBrokerRequest.self,
+            from: HIDBroker.readMessage(from: descriptors[1])
+        )
+        #expect(request.displayID == 3)
+        #expect(request.rotation == "rot90")
+    }
+
+    @Test("Requests without a display decode as main-display requests")
+    func requestWithoutDisplay() throws {
+        let request = try JSONDecoder().decode(
+            HIDBrokerRequest.self,
+            from: Data(#"{"primitives":[{"kind":"down","x":1,"y":2}],"displayProbe":"auto"}"#.utf8)
+        )
+
+        #expect(request.displayID == nil)
+        #expect(request.rotation == nil)
+        #expect(throws: Never.self) { try request.validateDisplay(resolved: nil) }
+        #expect(throws: CLIError.self) { try request.validateDisplay(resolved: innerTarget(.rot90)) }
+    }
+
+    @Test("A request is refused when the display or its rotation changed")
+    func displayOrRotationChangeIsRefused() {
+        let request = HIDBrokerRequest(primitives: [.touch(.down, x: 1, y: 2)], target: innerTarget(.rot90))
+
+        #expect(throws: Never.self) { try request.validateDisplay(resolved: innerTarget(.rot90)) }
+        #expect(throws: CLIError.self) { try request.validateDisplay(resolved: innerTarget(.rot180)) }
+        #expect(throws: CLIError.self) { try request.validateDisplay(resolved: nil) }
+    }
+
+    @Test("The broker's route check refuses a client without a display while the inner display is active")
+    @MainActor
+    func executeRefusesClientWithoutDisplay() async {
+        var sent = 0
+        let request = HIDBrokerRequest(primitives: [.touch(.down, x: 1, y: 2), .touch(.up, x: 1, y: 2)])
+
+        let result = await HIDBroker.execute(
+            request,
+            enforceTouchGuard: {
+                try HIDBroker.validateRoute(of: request, target: innerTarget(.rot90), transport: .dtuhid)
+            },
+            sendTouch: { _, _, _ in sent += 1 },
+            sleep: { _ in }
+        )
+
+        #expect(sent == 0)
+        #expect(result.shouldContinue)
+        #expect(result.error.map(HIDBroker.brokerResponseDescription(for:)) == HIDBrokerRequest.displayChangedMessage)
+    }
+
+    @Test("The broker's route check refuses the inner display over Indigo and allows a matching DTUHID request")
+    @MainActor
+    func validateRouteTransport() {
+        let request = HIDBrokerRequest(primitives: [.touch(.down, x: 1, y: 2)], target: innerTarget(.rot90))
+
+        #expect(throws: Never.self) {
+            try HIDBroker.validateRoute(of: request, target: innerTarget(.rot90), transport: .dtuhid)
+        }
+        #expect(throws: CLIError.self) {
+            try HIDBroker.validateRoute(of: request, target: innerTarget(.rot90), transport: .indigo)
+        }
+    }
+
+    @Test("Delay-only requests skip touch routing")
     @MainActor
     func delayOnlyRequestSkipsGuard() async {
         var guardCalls = 0

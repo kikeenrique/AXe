@@ -107,31 +107,65 @@ struct AccessibilityTargetResolver {
         )
     }
 
+    /// Resolves the tap point of the matched element. With a non-main `target` (inner display of a
+    /// foldable), the tree is first reduced to the active panel's windows in interface space (see
+    /// `TouchTarget.activePanelRoots`), so the point is an interface point.
+    static func resolveTap(
+        roots: [AccessibilityElement],
+        query: AccessibilityQuery,
+        elementType: String? = nil,
+        target: TouchTarget?
+    ) throws -> TapResolution {
+        try resolveTap(roots: target?.activePanelRoots(roots) ?? roots, query: query, elementType: elementType)
+    }
+
+    /// Resolves an element against the active panel's interface-space tree (see `resolveTap`).
+    static func resolveElement(
+        roots: [AccessibilityElement],
+        query: AccessibilityQuery,
+        elementType: String? = nil,
+        target: TouchTarget?
+    ) throws -> AccessibilityMatch {
+        try resolveElement(roots: target?.activePanelRoots(roots) ?? roots, query: query, elementType: elementType)
+    }
+
     static func resolveTap(
         roots: [AccessibilityElement],
         query: AccessibilityQuery,
         elementType: String? = nil
     ) throws -> TapResolution {
-        let match = try resolveElement(roots: roots, query: query, elementType: elementType)
-
-        let activationElement = try selectActivationElement(
-            from: match.element,
-            roots: roots,
-            selectorDescription: match.selectorDescription,
-            allowSiblingRedirection: query.allowsSiblingRedirection
-        )
-
-        guard let frame = activationElement.frame else {
-            throw ElementResolutionError.invalidFrame(reason: "Matched element has no frame.")
-        }
-        guard frame.width > 0, frame.height > 0 else {
-            throw ElementResolutionError.invalidFrame(reason: "Matched element has an invalid frame size (\(frame.width)x\(frame.height)).")
-        }
+        let activationElement = try resolveActivationElement(roots: roots, query: query, elementType: elementType)
+        let frame = try validFrame(of: activationElement)
 
         return TapResolution(
             point: activationPoint(for: activationElement, frame: frame),
             isSwitchLikeControl: activationElement.isSwitchLikeControl
         )
+    }
+
+    private static func resolveActivationElement(
+        roots: [AccessibilityElement],
+        query: AccessibilityQuery,
+        elementType: String?
+    ) throws -> AccessibilityElement {
+        let match = try resolveElement(roots: roots, query: query, elementType: elementType)
+
+        return try selectActivationElement(
+            from: match.element,
+            roots: roots,
+            selectorDescription: match.selectorDescription,
+            allowSiblingRedirection: query.allowsSiblingRedirection
+        )
+    }
+
+    private static func validFrame(of element: AccessibilityElement) throws -> AccessibilityElement.Frame {
+        guard let frame = element.frame else {
+            throw ElementResolutionError.invalidFrame(reason: "Matched element has no frame.")
+        }
+        guard frame.width > 0, frame.height > 0 else {
+            throw ElementResolutionError.invalidFrame(reason: "Matched element has an invalid frame size (\(frame.width)x\(frame.height)).")
+        }
+        return frame
     }
 
     private static func activationPoint(

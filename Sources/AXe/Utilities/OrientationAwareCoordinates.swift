@@ -65,6 +65,12 @@ enum CoordinateMapping {
     ///
     /// Physical point = `(offsetX + lx * scale, offsetY + ly * scale)`.
     case letterbox(scale: Double, offsetX: Double, offsetY: Double)
+
+    /// The active display of a foldable is not the main display. Interface points (including
+    /// selector points, which come from the interface-space panel tree) convert to the panel's
+    /// native portrait points with the devicectl rotation and size, and points outside the panel are
+    /// refused. The touch is sent with the display's target (see `TouchTarget`).
+    case display(TouchTarget)
 }
 
 // MARK: - Orientation-Aware Coordinate Translation
@@ -103,10 +109,11 @@ struct OrientationAwareCoordinates {
     /// Determines which coordinate mapping to apply for the given simulator.
     ///
     /// Detection flow:
-    /// 0. On a foldable whose inner display is active, fail with the touch guard message.
+    /// 0. On a foldable whose active display is not the main one, use the `TouchTarget` from
+    ///    devicectl's orientation and size (no AX fetch, no SimulatorKit or screenshot probe). Fail
+    ///    when the active display of a foldable cannot be determined.
     /// 1. Fetch AX application frame.
     /// 2. If an explicit override was supplied → rotation case.
-    /// 3. On a foldable whose active display is not primary, use devicectl's orientation and size.
     /// 4. Otherwise read SimulatorKit private UI orientation.
     /// 5. If private orientation is unavailable and the AX frame is portrait-shaped → passthrough.
     /// 6. If unavailable and landscape-shaped, probe screenshot dimensions (of the active display on foldables).
@@ -125,6 +132,10 @@ struct OrientationAwareCoordinates {
         orientationOverride: SimulatorOrientation? = nil,
         logger: AxeLogger
     ) async throws -> CoordinateMapping {
+        if let target = try await TouchTarget.nonMainTarget(forSimulatorUDID: simulatorUDID, logger: logger) {
+            return displayMapping(for: target, logger: logger)
+        }
+
         let roots = try await AccessibilityFetcher.fetchAccessibilityElements(
             for: simulatorUDID,
             logger: logger
@@ -144,13 +155,13 @@ struct OrientationAwareCoordinates {
         orientationOverride: SimulatorOrientation? = nil,
         logger: AxeLogger
     ) async throws -> CoordinateMapping {
-        // Run the foldable touch guard before any mapping work, so an unfolded foldable reports the
-        // inner-display message instead of a mapping error. Non-foldables get nil without devicectl,
-        // and a failed simulator lookup is treated as nil (`performHIDEvent` enforces again).
+        // A non-main active display of a foldable maps through its TouchTarget: SimulatorKit's screen
+        // probe below reads screen 1 (the cover) and the AX application frame is the cover's size, so
+        // neither describes the inner panel. Non-foldables get nil without devicectl, and a failed
+        // simulator lookup is treated as nil.
         let displayState = try await SimulatorDisplays.state(forSimulatorUDID: simulatorUDID, logger: logger)
-        if let reason = FoldableTouchGuard.blockReason(for: displayState) {
-            logger.error().log("Touch blocked: \(reason)")
-            throw CLIError(errorDescription: reason)
+        if let target = try TouchTarget.resolve(state: displayState), !target.isMain {
+            return displayMapping(for: target, logger: logger)
         }
 
         guard let appFrame = applicationFrame(from: roots) else {
@@ -165,19 +176,6 @@ struct OrientationAwareCoordinates {
             return .rotation(orientationOverride, portraitSize: portraitSize)
         }
 
-        // Foldables: SimulatorKit's screen probe below reads screen 1 (the cover display) and the
-        // AX frame shape does not follow the inner display, so a non-primary active display takes
-        // its orientation and size from devicectl. Non-foldables return nil without running devicectl.
-        // The touch guard above blocks the inner display, so this branch is only reachable once
-        // inner-display touch routing replaces the guard. The rotation direction must be verified
-        // against real inner-display touches at that point.
-        if let displayState, let active = displayState.activeDisplay, !active.primary {
-            let mapping = try displayMapping(for: active)
-            logger.info().log(
-                "Active display \(active.displayId) (\(active.name)) is not primary; using devicectl orientation \(active.currentOrientation ?? "unknown")"
-            )
-            return mapping
-        }
         let probeDisplayID = displayState.flatMap { $0.isMultiDisplay ? $0.activeDisplay?.displayId : nil }
 
         // Prefer the simulator's private UI orientation state when available; this
@@ -262,21 +260,12 @@ struct OrientationAwareCoordinates {
         throw CLIError(errorDescription: "Unable to determine rotated simulator orientation. AXe can read landscape coordinates only when SimulatorKit reports the current UI orientation; the screenshot confirms the simulator is rotated, but the private orientation probe was unavailable.")
     }
 
-    /// Mapping for an active display described by devicectl.
-    ///
-    /// `currentOrientation` is the UI rotation relative to the panel's native portrait axes, and
-    /// `nativeSize / pointScale` is the panel's portrait size in points.
-    static func displayMapping(for display: SimulatorDisplay) throws -> CoordinateMapping {
-        guard let rotation = display.currentRotation, let size = display.nativeSizePoints else {
-            throw CLIError(
-                errorDescription: "Unable to determine coordinate mapping because devicectl did not report the orientation and size of display \(display.displayId) (\(display.name))."
-            )
-        }
-        let orientation = rotation.simulatorOrientation
-        guard orientation != .portrait else {
-            return .passthrough
-        }
-        return .rotation(orientation, portraitSize: (width: size.width, height: size.height))
+    private static func displayMapping(for target: TouchTarget, logger: AxeLogger) -> CoordinateMapping {
+        let size = target.nativePointSize
+        logger.info().log(
+            "Active display \(target.displayID) is not the main display; using devicectl \(target.rotation.rawValue) over \(size.width)x\(size.height) pt"
+        )
+        return .display(target)
     }
 
     // MARK: - Screenshot Dimension Probe
@@ -495,7 +484,7 @@ struct OrientationAwareCoordinates {
             logger: logger
         )
 
-        return applyMapping(mapping, to: point, logger: logger)
+        return try applyMapping(mapping, to: point, logger: logger)
     }
 
     static func translate(
@@ -512,7 +501,7 @@ struct OrientationAwareCoordinates {
             logger: logger
         )
 
-        return applyMapping(mapping, to: point, logger: logger)
+        return try applyMapping(mapping, to: point, logger: logger)
     }
 
     /// Translates multiple logical points using a single detection round-trip.
@@ -538,7 +527,7 @@ struct OrientationAwareCoordinates {
             logger: logger
         )
 
-        return points.map { applyMapping(mapping, to: $0, logger: logger) }
+        return try points.map { try applyMapping(mapping, to: $0, logger: logger) }
     }
 
     static func translateBatch(
@@ -555,22 +544,32 @@ struct OrientationAwareCoordinates {
             logger: logger
         )
 
-        return points.map { applyMapping(mapping, to: $0, logger: logger) }
+        return try points.map { try applyMapping(mapping, to: $0, logger: logger) }
     }
 
     // MARK: - Private Helpers
 
     /// Applies a `CoordinateMapping` to a single logical point, logging the translation.
-    private static func applyMapping(
+    ///
+    /// - Throws: on a non-main display of a foldable, when the point lies outside the panel.
+    static func applyMapping(
         _ mapping: CoordinateMapping,
         to point: (x: Double, y: Double),
         logger: AxeLogger
-    ) -> (x: Double, y: Double) {
+    ) throws -> (x: Double, y: Double) {
         let physical: (x: Double, y: Double)
 
         switch mapping {
         case .passthrough:
             return point
+
+        case .display(let target):
+            physical = try target.checkedNativePoint(fromInterface: point)
+            let normalized = target.normalized(nativePoint: physical)
+            logger.info().log(
+                String(format: "Translated interface (%.1f, %.1f) → native (%.2f, %.2f) on display %d [ratio %.4f, %.4f]",
+                       point.x, point.y, physical.x, physical.y, target.displayID, normalized.x, normalized.y)
+            )
 
         case .rotation(let orientation, let portraitSize):
             physical = translateToPhysical(point: point, orientation: orientation, portraitSize: portraitSize)

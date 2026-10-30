@@ -29,15 +29,46 @@ struct HIDBrokerRequest: Codable, Equatable {
     /// The client's `AXE_DISPLAY_PROBE` policy. Optional so brokers that predate the field ignore
     /// it and requests from older clients fall back to the broker's own environment.
     let displayProbe: DisplayProbePolicy?
+    /// The non-main display (inner display of a foldable) whose native space the client converted
+    /// the points to; `nil` for the main display. Optional, so main-display requests keep their shape.
+    let displayID: Int?
+    /// The rotation (`rot0`...`rot270`) of `displayID` when the points were converted.
+    let rotation: String?
 
-    init(primitives: [HIDBrokerPrimitive], displayProbe: DisplayProbePolicy? = nil) {
+    init(
+        primitives: [HIDBrokerPrimitive],
+        displayProbe: DisplayProbePolicy? = nil,
+        displayID: Int? = nil,
+        rotation: String? = nil
+    ) {
         self.primitives = primitives
         self.displayProbe = displayProbe
+        self.displayID = displayID
+        self.rotation = rotation
     }
 
-    /// Delay-only requests send no input, so they skip the foldable touch guard.
+    init(primitives: [HIDBrokerPrimitive], displayProbe: DisplayProbePolicy? = nil, target: TouchTarget?) {
+        self.init(
+            primitives: primitives,
+            displayProbe: displayProbe,
+            displayID: target?.displayID,
+            rotation: target?.rotation.rawValue
+        )
+    }
+
+    /// Delay-only requests send no input, so they skip touch routing.
     var sendsTouches: Bool {
         primitives.contains { $0.kind != .delay }
+    }
+
+    static let displayChangedMessage = "The active display of the simulator or its rotation changed while the touch was being prepared, so no touch was sent. Run the command again."
+
+    /// Rejects the request when the display and rotation the broker would route to are not the
+    /// ones the client converted the points for (`nil` = main display on both sides).
+    func validateDisplay(resolved target: TouchTarget?) throws {
+        guard displayID == target?.displayID, rotation == target?.rotation.rawValue else {
+            throw CLIError(errorDescription: Self.displayChangedMessage)
+        }
     }
 }
 
@@ -57,7 +88,9 @@ struct HIDBrokerBootIdentity: Equatable {
 enum HIDBroker {
     static let inputDeliveryFailureDescription = "AXe could not deliver simulator input. The simulator may have restarted or disconnected. Confirm it is booted and try again."
     static let dtuhidMinimumBootUptime: TimeInterval = 10
-    private static let protocolVersion = 2
+    // 3: requests carry the display and rotation the points were converted for. A broker that
+    // predates it would send inner-display points to the cover, so it must never receive them.
+    private static let protocolVersion = 3
     static let maximumMessageBytes = 64 * 1024
     private static let idleTimeoutMilliseconds: Int32 = 60_000
     static let serverIOTimeoutMilliseconds: Int = 2_000
@@ -67,10 +100,11 @@ enum HIDBroker {
     static let startupTimeoutNanoseconds: UInt64 = 30_000_000_000
     static func sendTouchPrimitives(
         _ primitives: [HIDBrokerPrimitive],
-        simulatorUDID: String
+        simulatorUDID: String,
+        target: TouchTarget? = nil
     ) throws {
         let endpoint = try endpointPath(simulatorUDID: simulatorUDID)
-        try sendTouchPrimitives(primitives) {
+        try sendTouchPrimitives(primitives, target: target) {
             try connectToReadyBroker(simulatorUDID: simulatorUDID, endpoint: endpoint)
         }
     }
@@ -78,9 +112,10 @@ enum HIDBroker {
     static func sendTouchPrimitives(
         _ primitives: [HIDBrokerPrimitive],
         displayProbe: DisplayProbePolicy = DisplayProbePolicy.current(),
+        target: TouchTarget? = nil,
         descriptorProvider: () throws -> Int32
     ) throws {
-        let request = HIDBrokerRequest(primitives: primitives, displayProbe: displayProbe)
+        let request = HIDBrokerRequest(primitives: primitives, displayProbe: displayProbe, target: target)
         var requestData = try JSONEncoder().encode(request)
         requestData.append(0x0A)
         guard requestData.count <= maximumMessageBytes else {
@@ -182,7 +217,11 @@ enum HIDBroker {
         let result = await execute(
             request,
             enforceTouchGuard: {
-                try await FoldableTouchGuard.enforce(for: session.simulator, logger: logger)
+                // Resolve the route before any primitive is sent: a request prepared for another
+                // display, an undeterminable display or an Indigo session on the inner display
+                // sends nothing and keeps the broker alive.
+                let target = try await TouchTarget.nonMainTarget(for: session.simulator, logger: logger)
+                try validateRoute(of: request, target: target, transport: session.hid.transportType)
             },
             sendTouch: { direction, x, y in
                 try await HIDInteractor.performHIDEvent(
@@ -206,8 +245,9 @@ enum HIDBroker {
 
     /// Executes one decoded request.
     ///
-    /// The touch guard runs before the first primitive, so a blocked request sends no input and keeps
-    /// the broker alive. Only a failed HID send ends the broker session.
+    /// Touch routing (`enforceTouchGuard`) is checked before the first primitive, so a refused
+    /// request sends no input and keeps the broker alive. Only a failed HID send ends the broker
+    /// session.
     @MainActor
     static func execute(
         _ request: HIDBrokerRequest,
@@ -242,6 +282,17 @@ enum HIDBroker {
         } catch {
             return HIDBrokerExecutionResult(error: error, shouldContinue: true)
         }
+    }
+
+    /// The broker's route check for one request: the client converted the points for the display
+    /// and rotation the broker resolves now, and the transport can address that display.
+    static func validateRoute(
+        of request: HIDBrokerRequest,
+        target: TouchTarget?,
+        transport: FBSimulatorHIDTransportType
+    ) throws {
+        try request.validateDisplay(resolved: target)
+        _ = try TouchRouting.hidTarget(for: target, transport: transport)
     }
 
     static func brokerResponseDescription(for error: Error) -> String {

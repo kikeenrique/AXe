@@ -255,54 +255,8 @@ struct DisplayProbePolicyTests {
     }
 }
 
-@Suite("Foldable touch guard")
-struct FoldableTouchGuardTests {
-    @Test("Blocks touches when the inner display is active")
-    func blocksInnerDisplay() throws {
-        let reason = FoldableTouchGuard.blockReason(for: try fixtureState("duo-unfolded"))
-
-        #expect(reason == FoldableTouchGuard.innerDisplayMessage)
-    }
-
-    @Test("Allows touches when the cover display is active")
-    func allowsCoverDisplay() throws {
-        #expect(FoldableTouchGuard.blockReason(for: try fixtureState("duo-folded")) == nil)
-    }
-
-    @Test("Allows touches on single-display and unprobed simulators")
-    func allowsSingleDisplay() throws {
-        #expect(FoldableTouchGuard.blockReason(for: try fixtureState("single-display")) == nil)
-        #expect(FoldableTouchGuard.blockReason(for: nil) == nil)
-    }
-
-    @Test("Blocks touches when the active display is unknown")
-    func blocksUnknownActiveDisplay() {
-        let state = SimulatorDisplayState(displays: [
-            display(id: 1, name: "LCD", primary: true, active: nil, backlight: "off"),
-            display(id: 3, name: "LCD-1", primary: false, active: nil, backlight: "off"),
-        ])
-
-        #expect(FoldableTouchGuard.blockReason(for: state) == FoldableTouchGuard.unknownDisplayMessage)
-    }
-
-    @Test("Only touch events are guarded")
-    func classifiesTouchEvents() {
-        #expect(FBSimulatorHIDEvent.tapAt(x: 1, y: 2).producesTouch)
-        #expect(FBSimulatorHIDEvent.touch(direction: .down, x: 1, y: 2).producesTouch)
-        #expect(FBSimulatorHIDEvent.composite([.delay(0.1), .touch(direction: .up, x: 1, y: 2)]).producesTouch)
-        #expect(FBSimulatorHIDEvent.swipe(0, yStart: 0, xEnd: 10, yEnd: 10, delta: 5, duration: 0.1).producesTouch)
-        #expect(!FBSimulatorHIDEvent.shortKeyPress(4).producesTouch)
-        #expect(!FBSimulatorHIDEvent.shortButtonPress(.homeButton).producesTouch)
-        #expect(!FBSimulatorHIDEvent.composite([.delay(0.1), .keyboard(direction: .down, keyCode: 4)]).producesTouch)
-    }
-
-    @Test("Guard errors keep their message through localizedDescription")
-    func guardMessageSurvivesLocalizedDescription() {
-        let error: Error = CLIError(errorDescription: FoldableTouchGuard.innerDisplayMessage)
-
-        #expect(error.localizedDescription == FoldableTouchGuard.innerDisplayMessage)
-    }
-
+@Suite("Display state cache")
+struct DisplayStateCacheTests {
     @Test("Each batch step starts without cached display state")
     @MainActor
     func batchStepClearsCachedState() throws {
@@ -540,33 +494,8 @@ struct TolerantDecodingTests {
     }
 }
 
-@Suite("Display coordinate mapping")
-struct DisplayCoordinateMappingTests {
-    @Test("Inner display at rot90 maps with landscape rotation over its native point size")
-    @MainActor
-    func innerDisplayRotation() throws {
-        let inner = try #require(try fixtureState("duo-unfolded").activeDisplay)
-
-        guard case .rotation(let orientation, let portraitSize) = try OrientationAwareCoordinates.displayMapping(for: inner) else {
-            Issue.record("Expected a rotation mapping")
-            return
-        }
-        #expect(orientation == .landscape)
-        #expect(portraitSize.width == 669)
-        #expect(portraitSize.height == 951)
-    }
-
-    @Test("rot0 passes coordinates through")
-    @MainActor
-    func rot0IsPassthrough() throws {
-        let cover = display(id: 1, name: "LCD", primary: true, active: true, backlight: "activeOn")
-
-        guard case .passthrough = try OrientationAwareCoordinates.displayMapping(for: cover) else {
-            Issue.record("Expected passthrough")
-            return
-        }
-    }
-
+@Suite("Display rotation")
+struct DisplayRotationTests {
     @Test(
         "Rotations map to UI orientations",
         arguments: [
@@ -578,15 +507,5 @@ struct DisplayCoordinateMappingTests {
     )
     func rotationMapping(rotation: SimulatorDisplay.Rotation, expected: SimulatorOrientation) {
         #expect(rotation.simulatorOrientation == expected)
-    }
-
-    @Test("Missing orientation data throws")
-    @MainActor
-    func missingDataThrows() {
-        let incomplete = display(id: 3, name: "LCD-1", primary: false, active: true, backlight: "activeOn", orientation: nil)
-
-        #expect(throws: CLIError.self) {
-            try OrientationAwareCoordinates.displayMapping(for: incomplete)
-        }
     }
 }

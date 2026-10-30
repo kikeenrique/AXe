@@ -115,7 +115,7 @@ struct SimulatorDisplay: Decodable, Equatable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        // Display selection and the touch guard need these fields; they are decoded strictly.
+        // Display selection and touch routing need these fields; they are decoded strictly.
         displayId = try container.decode(Int.self, forKey: .displayId)
         name = try container.decodeIfPresent(String.self, forKey: .name) ?? ""
         uniqueId = try container.decodeIfPresent(String.self, forKey: .uniqueId) ?? ""
@@ -408,42 +408,13 @@ enum DisplayProbePolicy: String, Codable {
     }
 }
 
-// MARK: - Interim Touch Guard
-
-/// Blocks touch input that cannot reach the active display.
-///
-/// AXe dispatches touches through `FBSimulatorHID`, which only reaches the primary (cover)
-/// touchscreen. On an unfolded foldable the inner display is active, and touches would report
-/// success without any effect. Until inner-display routing exists, such touches fail.
-enum FoldableTouchGuard {
-    static let innerDisplayMessage = "AXe cannot deliver touches to the inner display of a foldable simulator yet. Fold the simulator with `axe hinge close` so the cover display is active, or wait for inner-display support."
-    static let unknownDisplayMessage = "AXe could not determine which display of the foldable simulator is active, so no touch was sent. Confirm the simulator is booted and try again."
-
-    /// Returns the reason touches must not be sent, or `nil` when they can be delivered.
-    static func blockReason(for state: SimulatorDisplayState?) -> String? {
-        guard let state, state.isMultiDisplay else {
-            return nil
-        }
-        guard let active = state.activeDisplay else {
-            return unknownDisplayMessage
-        }
-        return active.primary ? nil : innerDisplayMessage
-    }
-
-    @MainActor
-    static func enforce(for simulator: FBSimulator, logger: AxeLogger) async throws {
-        let state = try await SimulatorDisplays.state(for: simulator, logger: logger)
-        if let reason = blockReason(for: state) {
-            logger.error().log("Touch blocked: \(reason)")
-            throw CLIError(errorDescription: reason)
-        }
-    }
-}
+// MARK: - Touch Classification
 
 extension FBSimulatorHIDEvent {
-    /// True when the event, or any nested event, sends digitizer input.
+    /// True when the event, or any nested event, sends digitizer input, which is routed to the
+    /// active display (see `TouchRouting`).
     ///
-    /// Unknown future cases count as touch so a new digitizer event cannot bypass the guard.
+    /// Unknown future cases count as touch so a new digitizer event cannot bypass routing.
     var producesTouch: Bool {
         switch self {
         case .touch, .twoFingerTouch:
