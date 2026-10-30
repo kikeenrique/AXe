@@ -14,29 +14,45 @@ struct RecordVideo: AsyncParsableCommand {
     @Option(name: .customLong("udid"), help: "The UDID of the simulator.")
     var simulatorUDID: String
 
+    static let defaultFPS = 10
+    static let defaultQuality = 80
+    static let defaultScale = 1.0
+
     @Option(help: "Frames per second (1-30, default: 10)")
-    var fps: Int = 10
+    var fps: Int?
 
     @Option(help: "Quality factor (1-100) controlling bitrate (default: 80)")
-    var quality: Int = 80
+    var quality: Int?
 
     @Option(help: "Scale factor (0.1-1.0, default: 1.0)")
-    var scale: Double = 1.0
+    var scale: Double?
 
     @Option(help: "Output MP4 file path. Defaults to axe-video-<timestamp>.mp4 in the current directory.")
     var output: String?
 
+    @Option(
+        name: .customLong("display"),
+        help: "Display to record: auto (the active display), cover, inner, a display ID, or a display name. On foldable simulators, or with an explicit display, AXe records with simctl at the display's native size and refresh; --fps, --quality and --scale other than 1.0 are then rejected."
+    )
+    var display: DisplaySelection = .auto
+
     func validate() throws {
-        guard fps >= 1 && fps <= 30 else {
-            throw ValidationError("FPS must be between 1 and 30")
+        if let fps {
+            guard fps >= 1 && fps <= 30 else {
+                throw ValidationError("FPS must be between 1 and 30")
+            }
         }
 
-        guard quality >= 1 && quality <= 100 else {
-            throw ValidationError("Quality must be between 1 and 100")
+        if let quality {
+            guard quality >= 1 && quality <= 100 else {
+                throw ValidationError("Quality must be between 1 and 100")
+            }
         }
 
-        guard scale >= 0.1 && scale <= 1.0 else {
-            throw ValidationError("Scale must be between 0.1 and 1.0")
+        if let scale {
+            guard scale >= 0.1 && scale <= 1.0 else {
+                throw ValidationError("Scale must be between 0.1 and 1.0")
+            }
         }
     }
 
@@ -58,8 +74,24 @@ struct RecordVideo: AsyncParsableCommand {
             throw CLIError(errorDescription: "Simulator \(trimmedUDID) is not booted. Current state: \(targetSimulator.stateString.rawValue)")
         }
 
+        // A specific display, and the active display of a foldable, are recorded through simctl.
+        let displayArgument = try await SimulatorDisplays.captureDisplayArgument(
+            selection: display,
+            simulator: targetSimulator,
+            logger: logger
+        )
+        if let displayArgument {
+            let unsupported = SimctlVideoRecorder.unsupportedOptions(fps: fps, quality: quality, scale: scale)
+            guard unsupported.isEmpty else {
+                throw SimctlVideoRecorder.unsupportedOptionsError(display: displayArgument, options: unsupported)
+            }
+        }
+
         let outputURL = try prepareOutputURL()
         FileHandle.standardError.write(Data("Recording simulator \(targetSimulator.udid) to \(outputURL.path)\n".utf8))
+        if let displayArgument {
+            FileHandle.standardError.write(Data("Recording display \(displayArgument) with simctl\n".utf8))
+        }
         FileHandle.standardError.write(Data("Press Ctrl+C to stop recording\n".utf8))
 
         let cancellationFlag = CancellationFlag()
@@ -71,14 +103,23 @@ struct RecordVideo: AsyncParsableCommand {
         defer { signalObserver.invalidate() }
 
         do {
-            try await recordVideo(
-                simulator: targetSimulator,
-                outputURL: outputURL,
-                fps: fps,
-                quality: quality,
-                scale: scale,
-                cancellationFlag: cancellationFlag
-            )
+            if let displayArgument {
+                try await SimctlVideoRecorder.record(
+                    simulatorUDID: trimmedUDID,
+                    display: displayArgument,
+                    outputURL: outputURL,
+                    cancellationFlag: cancellationFlag
+                )
+            } else {
+                try await recordVideo(
+                    simulator: targetSimulator,
+                    outputURL: outputURL,
+                    fps: fps ?? Self.defaultFPS,
+                    quality: quality ?? Self.defaultQuality,
+                    scale: scale ?? Self.defaultScale,
+                    cancellationFlag: cancellationFlag
+                )
+            }
             FileHandle.standardError.write(Data("Recording saved to \(outputURL.path)\n".utf8))
             print(outputURL.path)
         } catch {

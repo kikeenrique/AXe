@@ -145,6 +145,9 @@ let package = Package(
             dependencies: ["AXe", "AXeCore"],
             path: "Tests",
             exclude: ["Goldens"],
+            resources: [
+                .copy("Fixtures")
+            ],
             swiftSettings: [
                 .unsafeFlags(idbCompilerFlags)
             ]

@@ -72,6 +72,7 @@ struct Slider: AsyncParsableCommand {
 
         let query = try accessibilityQuery()
         let targetNormalized = value / 100.0
+        let touchTarget = try await TouchTarget.nonMainTarget(forSimulatorUDID: simulatorUDID, logger: logger)
 
         let match = try await AccessibilityPoller.resolveElementWithPolling(
             query: query,
@@ -79,6 +80,7 @@ struct Slider: AsyncParsableCommand {
             waitTimeout: waitTimeout,
             pollInterval: pollInterval,
             elementType: elementType,
+            target: touchTarget,
             logger: logger
         )
 
@@ -86,6 +88,7 @@ struct Slider: AsyncParsableCommand {
             initialMatch: match,
             query: query,
             targetNormalized: targetNormalized,
+            touchTarget: touchTarget,
             logger: logger
         )
 
@@ -103,10 +106,14 @@ struct Slider: AsyncParsableCommand {
         throw CLIError(errorDescription: "Unexpected state: no slider selector.")
     }
 
+    /// Plans the drag in interface points. On a non-main display of a foldable the match comes from
+    /// the interface-space panel tree (`TouchTarget.activePanelRoots`), and the drag is clamped to
+    /// the display instead of the AX application frame, which does not describe that panel.
     private func makeDragPlan(
         for element: AccessibilityElement,
         applicationFrame: AccessibilityElement.Frame?,
-        targetNormalized: Double
+        targetNormalized: Double,
+        touchTarget: TouchTarget?
     ) throws -> SliderDragPlan {
         guard element.isSliderLikeControl else {
             let typeDescription = element.type ?? element.role ?? "unknown"
@@ -115,6 +122,7 @@ struct Slider: AsyncParsableCommand {
         guard let frame = element.frame else {
             throw ElementResolutionError.invalidFrame(reason: "Matched slider has no frame.")
         }
+        let applicationFrame = Self.dragClampFrame(applicationFrame: applicationFrame, touchTarget: touchTarget)
         guard frame.width > 0, frame.height > 0 else {
             throw ElementResolutionError.invalidFrame(reason: "Matched slider has an invalid frame size (\(frame.width)x\(frame.height)).")
         }
@@ -148,12 +156,14 @@ struct Slider: AsyncParsableCommand {
         initialMatch: AccessibilityMatch,
         query: AccessibilityQuery,
         targetNormalized: Double,
+        touchTarget: TouchTarget?,
         logger: AxeLogger
     ) async throws -> String {
         let dragPlan = try makeDragPlan(
             for: initialMatch.element,
             applicationFrame: initialMatch.applicationFrame,
-            targetNormalized: targetNormalized
+            targetNormalized: targetNormalized,
+            touchTarget: touchTarget
         )
         logger.info().log(
             "Setting slider \(initialMatch.selectorDescription) from AXValue \(formatNormalized(dragPlan.currentNormalized)) toward \(formatNormalized(dragPlan.targetNormalized)) with low-level HID drag"
@@ -166,6 +176,7 @@ struct Slider: AsyncParsableCommand {
         let observedValue = try await pollObservedSliderValue(
             query: query,
             targetNormalized: targetNormalized,
+            touchTarget: touchTarget,
             logger: logger
         )
         guard observedValue.isWithinTolerance else {
@@ -197,12 +208,17 @@ struct Slider: AsyncParsableCommand {
         )
     }
 
-    private func resolveSliderElement(query: AccessibilityQuery, logger: AxeLogger) async throws -> AccessibilityMatch {
+    private func resolveSliderElement(
+        query: AccessibilityQuery,
+        touchTarget: TouchTarget?,
+        logger: AxeLogger
+    ) async throws -> AccessibilityMatch {
         let roots = try await AccessibilityFetcher.fetchAccessibilityElements(for: simulatorUDID, logger: logger)
         let match = try AccessibilityTargetResolver.resolveElement(
             roots: roots,
             query: query,
-            elementType: elementType
+            elementType: elementType,
+            target: touchTarget
         )
         guard match.element.isSliderLikeControl else {
             throw CLIError(errorDescription: "Matched element is no longer a slider.")
@@ -213,6 +229,7 @@ struct Slider: AsyncParsableCommand {
     private func pollObservedSliderValue(
         query: AccessibilityQuery,
         targetNormalized: Double,
+        touchTarget: TouchTarget?,
         logger: AxeLogger
     ) async throws -> SliderObservedValue {
         let clock = ContinuousClock()
@@ -220,7 +237,7 @@ struct Slider: AsyncParsableCommand {
         var lastObservedValue: SliderObservedValue?
 
         repeat {
-            let match = try await resolveSliderElement(query: query, logger: logger)
+            let match = try await resolveSliderElement(query: query, touchTarget: touchTarget, logger: logger)
             let rawValue = match.element.normalizedValue
             let normalizedValue = try parseNormalizedAXValue(rawValue)
             let observedValue = SliderObservedValue(
@@ -234,7 +251,7 @@ struct Slider: AsyncParsableCommand {
                 if clock.now >= deadline {
                     return observedValue
                 }
-                let stableMatch = try await resolveSliderElement(query: query, logger: logger)
+                let stableMatch = try await resolveSliderElement(query: query, touchTarget: touchTarget, logger: logger)
                 let stableRawValue = stableMatch.element.normalizedValue
                 let stableNormalizedValue = try parseNormalizedAXValue(stableRawValue)
                 let stableObservedValue = SliderObservedValue(
@@ -282,6 +299,16 @@ struct Slider: AsyncParsableCommand {
             return targetNormalized - Self.lowRangeCoordinateOffset
         }
         return targetNormalized + Self.highRangeCoordinateOffset
+    }
+
+    /// The frame a drag end is clamped to: the active display on a non-main display of a foldable
+    /// (the AX application frame there is another display's or the native size), else the AX
+    /// application frame.
+    static func dragClampFrame(
+        applicationFrame: AccessibilityElement.Frame?,
+        touchTarget: TouchTarget?
+    ) -> AccessibilityElement.Frame? {
+        touchTarget?.interfaceBounds ?? applicationFrame
     }
 
     static func clampedDragEndX(

@@ -1,6 +1,17 @@
 import Foundation
 
-struct AccessibilityElement: Decodable {
+/// An accessibility tree whose frames can be filtered and converted per display (see
+/// `TouchTarget.activePanelRoots`). Implemented by the decoded `AccessibilityElement` used for
+/// selectors and by `DescribedElement`, which keeps describe-ui's full JSON schema.
+protocol AccessibilityFrameTree {
+    var frame: AccessibilityElement.Frame? { get }
+    var children: [Self]? { get }
+    func replacingChildren(_ children: [Self]) -> Self
+    func replacingFrame(_ frame: AccessibilityElement.Frame) -> Self
+    func mappingFrames(_ transform: (AccessibilityElement.Frame) -> AccessibilityElement.Frame) -> Self
+}
+
+struct AccessibilityElement: Decodable, AccessibilityFrameTree {
     private static let actionableTypes: Set<String> = [
         "Button",
         "Cell",
@@ -64,6 +75,38 @@ struct AccessibilityElement: Decodable {
         AXUniqueId = try Self.decodeOptionalScalarString(from: container, forKey: .AXUniqueId)
         AXIdentifier = try Self.decodeOptionalScalarString(from: container, forKey: .AXIdentifier)
         AXValue = try Self.decodeOptionalScalarString(from: container, forKey: .AXValue)
+    }
+
+    private init(copying element: AccessibilityElement, frame: Frame?, children: [AccessibilityElement]?) {
+        type = element.type
+        self.frame = frame
+        self.children = children
+        role = element.role
+        roleDescription = element.roleDescription
+        subrole = element.subrole
+        AXLabel = element.AXLabel
+        AXUniqueId = element.AXUniqueId
+        AXIdentifier = element.AXIdentifier
+        AXValue = element.AXValue
+    }
+
+    /// A copy of the element with different children.
+    func replacingChildren(_ children: [AccessibilityElement]) -> AccessibilityElement {
+        AccessibilityElement(copying: self, frame: frame, children: children)
+    }
+
+    /// A copy of the element with a different frame; the children are unchanged.
+    func replacingFrame(_ frame: Frame) -> AccessibilityElement {
+        AccessibilityElement(copying: self, frame: frame, children: children)
+    }
+
+    /// A copy of the subtree with every frame transformed.
+    func mappingFrames(_ transform: (Frame) -> Frame) -> AccessibilityElement {
+        AccessibilityElement(
+            copying: self,
+            frame: frame.map(transform),
+            children: children?.map { $0.mappingFrames(transform) }
+        )
     }
 
     private static func decodeOptionalScalarString(

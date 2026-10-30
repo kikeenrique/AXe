@@ -5,6 +5,7 @@ import FBSimulatorControl
 struct BatchPlanRunner {
     let session: HIDInteractor.Session
     let logger: AxeLogger
+    var context: BatchContext?
 
     func run(_ plan: BatchPlan) async throws {
         var pendingMergeable: [SimulatorHIDEvent] = []
@@ -42,6 +43,15 @@ struct BatchPlanRunner {
             case .buttonPress(let button, let duration):
                 try await flushPending()
                 try await button.perform(duration: duration, in: session, logger: logger)
+            case .deviceState(let action):
+                try await flushPending()
+                defer {
+                    SimulatorDisplays.invalidateCachedState()
+                    context?.invalidateAccessibilityCache()
+                }
+                if let warning = try await FoldableDevice.perform(action, simulator: session.simulator, logger: logger) {
+                    print("Warning: \(warning)", to: &standardError)
+                }
             }
         }
 

@@ -445,6 +445,7 @@ function verify_idb_source_state() {
     "FBSimulatorControl/Management/SimulatorControlBootstrap.swift|public final class SimulatorControlBootstrap"
     "FBSimulatorControl/Commands/SimulatorHIDCommands.swift|public func connect() async throws -> SimulatorHID"
     "FBSimulatorControl/Commands/SimulatorDisplayCommands.swift|public enum SimulatorDisplayRotation"
+    "FBSimulatorControl/Commands/SimulatorHingeCommands.swift|public struct SimulatorHingeCommands"
     "FBSimulatorControl/Commands/SimulatorScreenshotCommands.swift|public func take(configuration: ScreenshotConfiguration)"
     "FBSimulatorAX/Commands/Simulator+UIAutomation.swift|public func uiAutomation(backend: UIAutomationBackend"
     "FBControlCore/Utility/BundledResources.swift|public static var hostDirectoryPath"

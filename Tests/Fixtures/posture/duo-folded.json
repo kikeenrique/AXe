@@ -1,0 +1,52 @@
+{
+  "activeDisplay" : {
+    "active" : true,
+    "backlight" : "activeOn",
+    "id" : 1,
+    "interfaceOrientation" : "portrait",
+    "name" : "LCD",
+    "primary" : true,
+    "role" : "cover",
+    "rotation" : "rot0",
+    "sizePoints" : {
+      "height" : 678,
+      "width" : 466
+    },
+    "uniqueId" : "00000000-0000-0000-0000-000000000001"
+  },
+  "deviceOrientation" : "portrait",
+  "displays" : [
+    {
+      "active" : true,
+      "backlight" : "activeOn",
+      "id" : 1,
+      "interfaceOrientation" : "portrait",
+      "name" : "LCD",
+      "primary" : true,
+      "role" : "cover",
+      "rotation" : "rot0",
+      "sizePoints" : {
+        "height" : 678,
+        "width" : 466
+      },
+      "uniqueId" : "00000000-0000-0000-0000-000000000001"
+    },
+    {
+      "active" : false,
+      "backlight" : "off",
+      "id" : 3,
+      "interfaceOrientation" : "landscape",
+      "name" : "LCD-1",
+      "primary" : false,
+      "role" : "inner",
+      "rotation" : "rot90",
+      "sizePoints" : {
+        "height" : 669,
+        "width" : 951
+      },
+      "uniqueId" : "00000000-0000-0000-0000-000000000003"
+    }
+  ],
+  "hingeAngle" : 0,
+  "udid" : "SIMULATOR_UDID"
+}
