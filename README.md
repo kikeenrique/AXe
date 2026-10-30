@@ -33,6 +33,13 @@ Release artifacts are built once with the Xcode version selected by the release 
 
 AXe builds IDB from the immutable fork revision configured in `scripts/build.sh`, based on a verified upstream IDB revision. The build does not apply a local patch queue.
 
+### Foldable simulators
+
+On foldable simulators (iPhone Duo, Xcode 27.1 or later), AXe reads which display is active with `xcrun devicectl device info displays`. Other simulators never run this probe; set `AXE_DISPLAY_PROBE=always` or `AXE_DISPLAY_PROBE=never` to override.
+
+- `axe screenshot` captures the active display by default. Use `--display cover`, `--display inner`, a display ID, or a display name to pick one. simctl returns the captured display rotated to its current UI orientation.
+- Touch commands work while the cover display is active. While the inner display is active they fail with an error, because AXe cannot deliver touches to the inner display yet. Keyboard, text, and hardware-button commands are not affected.
+
 ## E2E development
 
 `make e2e` rebuilds the local IDB XCFrameworks, builds AXe, and runs the simulator tests with the Xcode selected by `DEVELOPER_DIR` or `xcode-select`. XcodeGen is required to generate the IDB projects. When Xcode 27 is selected, the runner starts Device Hub, chooses an available iOS 27 iPhone 17 Pro, and boots it with `simctl`.
@@ -53,6 +60,7 @@ axe describe-ui --udid "$UDID"
 axe tap --label "Continue" --udid "$UDID"
 axe type 'Hello world' --udid "$UDID"
 axe screenshot --output ./screen.png --udid "$UDID"
+axe screenshot --display cover --output ./cover.png --udid "$UDID"   # foldable: pick a display
 ```
 
 ## Documentation

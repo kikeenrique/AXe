@@ -5,6 +5,18 @@ All notable changes to the AXe iOS testing framework will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Added `axe screenshot --display auto|cover|inner|<id>|<name>` to choose the captured display. `auto` (default) captures the active display; on foldable simulators (iPhone Duo) the display state is read with `xcrun devicectl`, which non-foldable simulators never run. Set `AXE_DISPLAY_PROBE=auto|always|never` to override when display detection runs.
+
+### Fixed
+
+- Fixed `axe screenshot` on foldable simulators capturing the inner display even while the cover display was active, which produced a black image when folded.
+- Fixed touch commands (`tap`, `swipe`, `drag`, `slider`, `gesture`, `touch`, and batch touch steps) reporting success without delivering input on a foldable simulator whose inner display is active. They now fail with an explicit error until inner-display touch delivery is supported. Coordinate detection on that display now reads its orientation and size from devicectl instead of the cover screen.
+- Fixed AXe errors that are wrapped in another message, such as `axe batch` step failures, showing a generic system message instead of the underlying AXe error.
+
 ## [v1.8.0] - 2026-07-20
 
 ### Added

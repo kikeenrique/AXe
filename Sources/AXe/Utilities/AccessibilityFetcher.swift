@@ -42,6 +42,8 @@ struct AccessibilityFetcher {
         guard let target = simulatorSet.allSimulators.first(where: { $0.udid == simulatorUDID }) else {
             throw CLIError.simulatorNotFound(udid: simulatorUDID)
         }
+        // Lets the coordinate mapper's display probe reuse this lookup instead of creating another set.
+        SimulatorDisplays.recordDeviceType(for: target)
 
         return try await retryingAfterTestManagerRecovery(
             simulatorUDID: simulatorUDID,

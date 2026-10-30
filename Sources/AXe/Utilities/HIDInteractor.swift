@@ -95,6 +95,13 @@ struct HIDInteractor {
     }
 
     static func performHIDEvent(_ event: FBSimulatorHIDEvent, in session: Session, logger: AxeLogger) async throws {
+        // Every touch path (tap, swipe, drag, slider, gesture, batch, and the hid-broker used by
+        // `axe touch`) passes through here. FBSimulatorHID only reaches the primary touchscreen, so
+        // touches aimed at a foldable's inner display would report success without effect.
+        if event.producesTouch {
+            try await FoldableTouchGuard.enforce(for: session.simulator, logger: logger)
+        }
+
         logger.info().log("Performing HID event...")
         try await session.hid.send(event: event, logger: logger)
         logger.info().log("HID event performed successfully.")

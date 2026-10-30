@@ -1,0 +1,65 @@
+{
+  "info" : {
+    "commandType" : "devicectl.device.info.displays",
+    "jsonVersion" : 5,
+    "outcome" : "success",
+    "version" : "651.31"
+  },
+  "result" : {
+    "displays" : [
+      {
+        "backlightState" : "inactiveOn",
+        "currentOrientation" : "rot0",
+        "displayId" : 1,
+        "name" : "LCD",
+        "nativeSize" : [
+          1398,
+          2034
+        ],
+        "pointScale" : 3,
+        "primary" : true,
+        "type" : {
+          "integrated" : {
+
+          }
+        },
+        "uniqueId" : "00000000-0000-0000-0000-000000000001"
+      },
+      {
+        "backlightState" : "activeOn",
+        "currentOrientation" : "rot90",
+        "displayId" : 3,
+        "name" : "LCD-1",
+        "nativeSize" : [
+          2007,
+          2853
+        ],
+        "pointScale" : 3,
+        "primary" : false,
+        "type" : {
+          "integrated" : {
+
+          }
+        },
+        "uniqueId" : "00000000-0000-0000-0000-000000000003"
+      },
+      {
+        "currentOrientation" : "rot0",
+        "displayId" : 2,
+        "name" : "TVOut",
+        "nativeSize" : [
+          1920,
+          1080
+        ],
+        "pointScale" : 1,
+        "primary" : false,
+        "type" : {
+          "external" : {
+
+          }
+        },
+        "uniqueId" : "00000000-0000-0000-0000-000000000002"
+      }
+    ]
+  }
+}

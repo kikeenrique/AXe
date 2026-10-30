@@ -107,6 +107,7 @@ struct Batch: AsyncParsableCommand {
 
         for (index, line) in stepLines.enumerated() {
             var stepName = "<unparsed>"
+            await Self.beginStep()
             do {
                 let tokens = try ShellTokenizer.tokenize(line)
                 stepName = tokens.first ?? "<empty>"
@@ -132,6 +133,14 @@ struct Batch: AsyncParsableCommand {
         }
 
         print("✓ Batch completed successfully (\(stepLines.count) steps)")
+    }
+
+    /// Clears cached simulator display state so each step sees the current fold state. A foldable can
+    /// fold or unfold during a `sleep` step or an element wait; a stale "cover active" state would let
+    /// later touches through the inner-display guard.
+    @MainActor
+    static func beginStep() {
+        SimulatorDisplays.invalidateCachedState()
     }
 
     private func loadStepLines() throws -> [String] {

@@ -157,13 +157,113 @@ struct HIDBrokerTests {
             Issue.record("An invalid response should fail with an ambiguous outcome")
         } catch {
             let cliError = error as? CLIError
-            #expect(cliError?.errorDescription.contains("outcome is unknown") == true)
-            #expect(cliError?.errorDescription.contains("was not replayed") == true)
+            #expect(cliError?.message.contains("outcome is unknown") == true)
+            #expect(cliError?.message.contains("was not replayed") == true)
         }
 
         let request = try HIDBroker.readMessage(from: descriptors[1])
         #expect(descriptorRequests == 1)
-        #expect(String(decoding: request, as: UTF8.self) == #"{"primitives":[]}"#)
+        let decoded = try JSONDecoder().decode(HIDBrokerRequest.self, from: request)
+        #expect(decoded.primitives.isEmpty)
+        #expect(decoded.displayProbe == DisplayProbePolicy.current())
+    }
+
+    @Test("Requests carry the client's display probe policy")
+    func requestCarriesDisplayProbePolicy() throws {
+        var descriptors = [Int32](repeating: -1, count: 2)
+        #expect(socketpair(AF_UNIX, SOCK_STREAM, 0, &descriptors) == 0)
+        defer { Darwin.close(descriptors[1]) }
+
+        try HIDBroker.writeAll(Data(#"{"error":null}"#.utf8 + [0x0A]), to: descriptors[1])
+        try HIDBroker.sendTouchPrimitives([.touch(.down, x: 1, y: 2)], displayProbe: .never) {
+            descriptors[0]
+        }
+
+        let request = try JSONDecoder().decode(
+            HIDBrokerRequest.self,
+            from: HIDBroker.readMessage(from: descriptors[1])
+        )
+        #expect(request.displayProbe == .never)
+        #expect(request.primitives == [.touch(.down, x: 1, y: 2)])
+    }
+
+    @Test("Requests from clients without a probe policy still decode")
+    func legacyRequestDecodes() throws {
+        let request = try JSONDecoder().decode(
+            HIDBrokerRequest.self,
+            from: Data(#"{"primitives":[{"kind":"delay","duration":0.1}]}"#.utf8)
+        )
+
+        #expect(request.displayProbe == nil)
+        #expect(!request.sendsTouches)
+    }
+
+    @Test("A blocked request sends no primitives and keeps the broker alive")
+    @MainActor
+    func blockedRequestSendsNothing() async {
+        var sent = 0
+        var slept = 0
+        let request = HIDBrokerRequest(primitives: [
+            .touch(.down, x: 1, y: 2),
+            .delay(0.1),
+            .touch(.up, x: 1, y: 2),
+        ])
+
+        let result = await HIDBroker.execute(
+            request,
+            enforceTouchGuard: { throw CLIError(errorDescription: FoldableTouchGuard.innerDisplayMessage) },
+            sendTouch: { _, _, _ in sent += 1 },
+            sleep: { _ in slept += 1 }
+        )
+
+        #expect(sent == 0)
+        #expect(slept == 0)
+        #expect(result.shouldContinue)
+        #expect(result.error.map(HIDBroker.brokerResponseDescription(for:)) == FoldableTouchGuard.innerDisplayMessage)
+    }
+
+    @Test("Delay-only requests skip the touch guard")
+    @MainActor
+    func delayOnlyRequestSkipsGuard() async {
+        var guardCalls = 0
+        var slept = 0
+
+        let result = await HIDBroker.execute(
+            HIDBrokerRequest(primitives: [.delay(0.1)]),
+            enforceTouchGuard: { guardCalls += 1 },
+            sendTouch: { _, _, _ in },
+            sleep: { _ in slept += 1 }
+        )
+
+        #expect(guardCalls == 0)
+        #expect(slept == 1)
+        #expect(result.error == nil)
+    }
+
+    @Test("An allowed request sends every primitive in order; a send failure ends the session")
+    @MainActor
+    func allowedRequestSendsPrimitives() async {
+        var events: [String] = []
+        let request = HIDBrokerRequest(primitives: [.touch(.down, x: 1, y: 2), .touch(.up, x: 1, y: 2)])
+
+        let allowed = await HIDBroker.execute(
+            request,
+            enforceTouchGuard: { events.append("guard") },
+            sendTouch: { direction, _, _ in events.append(direction == .down ? "down" : "up") },
+            sleep: { _ in }
+        )
+        #expect(events == ["guard", "down", "up"])
+        #expect(allowed.error == nil)
+        #expect(allowed.shouldContinue)
+
+        let failed = await HIDBroker.execute(
+            request,
+            enforceTouchGuard: {},
+            sendTouch: { _, _, _ in throw CLIError(errorDescription: "send failed") },
+            sleep: { _ in }
+        )
+        #expect(failed.error != nil)
+        #expect(!failed.shouldContinue)
     }
 
     @Test("Concurrent cold starts spawn one broker")

@@ -211,7 +211,12 @@ axe describe-ui --point 100,200 --udid <UDID>      # Specific point
 axe screenshot --udid <UDID>                                    # Auto-named
 axe screenshot --output ~/Desktop/shot.png --udid <UDID>        # Specific file
 axe screenshot --output ~/Desktop/ --udid <UDID>                # Directory (auto-named)
+axe screenshot --display cover --output cover.png --udid <UDID> # Foldable: cover display
+axe screenshot --display inner --output inner.png --udid <UDID> # Foldable: inner display
+axe screenshot --display 3 --output shot.png --udid <UDID>      # Display ID or name (e.g. LCD-1)
 ```
+
+`--display` defaults to `auto`, the active display. On foldable simulators (iPhone Duo) AXe reads the active display with `xcrun devicectl`; other simulators keep the default capture path. `AXE_DISPLAY_PROBE=auto|always|never` overrides when display detection runs.
 
 ## Video recording
 

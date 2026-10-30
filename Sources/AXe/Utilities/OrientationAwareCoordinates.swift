@@ -103,11 +103,13 @@ struct OrientationAwareCoordinates {
     /// Determines which coordinate mapping to apply for the given simulator.
     ///
     /// Detection flow:
+    /// 0. On a foldable whose inner display is active, fail with the touch guard message.
     /// 1. Fetch AX application frame.
     /// 2. If an explicit override was supplied → rotation case.
-    /// 3. Otherwise read SimulatorKit private UI orientation.
-    /// 4. If private orientation is unavailable and the AX frame is portrait-shaped → passthrough.
-    /// 5. If unavailable and landscape-shaped, probe screenshot dimensions.
+    /// 3. On a foldable whose active display is not primary, use devicectl's orientation and size.
+    /// 4. Otherwise read SimulatorKit private UI orientation.
+    /// 5. If private orientation is unavailable and the AX frame is portrait-shaped → passthrough.
+    /// 6. If unavailable and landscape-shaped, probe screenshot dimensions (of the active display on foldables).
     ///    - Screenshot portrait-shaped (taller than wide) → letterbox case.
     ///    - Screenshot landscape-shaped (wider than tall) → rotated device case.
     ///
@@ -142,6 +144,15 @@ struct OrientationAwareCoordinates {
         orientationOverride: SimulatorOrientation? = nil,
         logger: AxeLogger
     ) async throws -> CoordinateMapping {
+        // Run the foldable touch guard before any mapping work, so an unfolded foldable reports the
+        // inner-display message instead of a mapping error. Non-foldables get nil without devicectl,
+        // and a failed simulator lookup is treated as nil (`performHIDEvent` enforces again).
+        let displayState = try await SimulatorDisplays.state(forSimulatorUDID: simulatorUDID, logger: logger)
+        if let reason = FoldableTouchGuard.blockReason(for: displayState) {
+            logger.error().log("Touch blocked: \(reason)")
+            throw CLIError(errorDescription: reason)
+        }
+
         guard let appFrame = applicationFrame(from: roots) else {
             throw CLIError(errorDescription: "Unable to determine coordinate mapping because the accessibility application frame is unavailable.")
         }
@@ -153,6 +164,21 @@ struct OrientationAwareCoordinates {
             }
             return .rotation(orientationOverride, portraitSize: portraitSize)
         }
+
+        // Foldables: SimulatorKit's screen probe below reads screen 1 (the cover display) and the
+        // AX frame shape does not follow the inner display, so a non-primary active display takes
+        // its orientation and size from devicectl. Non-foldables return nil without running devicectl.
+        // The touch guard above blocks the inner display, so this branch is only reachable once
+        // inner-display touch routing replaces the guard. The rotation direction must be verified
+        // against real inner-display touches at that point.
+        if let displayState, let active = displayState.activeDisplay, !active.primary {
+            let mapping = try displayMapping(for: active)
+            logger.info().log(
+                "Active display \(active.displayId) (\(active.name)) is not primary; using devicectl orientation \(active.currentOrientation ?? "unknown")"
+            )
+            return mapping
+        }
+        let probeDisplayID = displayState.flatMap { $0.isMultiDisplay ? $0.activeDisplay?.displayId : nil }
 
         // Prefer the simulator's private UI orientation state when available; this
         // distinguishes landscape-left from landscape-right and catches upside-down portrait.
@@ -193,7 +219,11 @@ struct OrientationAwareCoordinates {
             "AX frame \(Int(appFrame.width))×\(Int(appFrame.height)) is landscape; probing screenshot dimensions"
         )
 
-        let screenshotDims = await screenshotPixelDimensions(for: simulatorUDID, logger: logger)
+        let screenshotDims = await screenshotPixelDimensions(
+            for: simulatorUDID,
+            displayID: probeDisplayID,
+            logger: logger
+        )
 
         if let dims = screenshotDims, dims.height > dims.width {
             // Screenshot is portrait-shaped despite a landscape AX frame →
@@ -232,6 +262,23 @@ struct OrientationAwareCoordinates {
         throw CLIError(errorDescription: "Unable to determine rotated simulator orientation. AXe can read landscape coordinates only when SimulatorKit reports the current UI orientation; the screenshot confirms the simulator is rotated, but the private orientation probe was unavailable.")
     }
 
+    /// Mapping for an active display described by devicectl.
+    ///
+    /// `currentOrientation` is the UI rotation relative to the panel's native portrait axes, and
+    /// `nativeSize / pointScale` is the panel's portrait size in points.
+    static func displayMapping(for display: SimulatorDisplay) throws -> CoordinateMapping {
+        guard let rotation = display.currentRotation, let size = display.nativeSizePoints else {
+            throw CLIError(
+                errorDescription: "Unable to determine coordinate mapping because devicectl did not report the orientation and size of display \(display.displayId) (\(display.name))."
+            )
+        }
+        let orientation = rotation.simulatorOrientation
+        guard orientation != .portrait else {
+            return .passthrough
+        }
+        return .rotation(orientation, portraitSize: (width: size.width, height: size.height))
+    }
+
     // MARK: - Screenshot Dimension Probe
 
     /// Reads the pixel dimensions of the current simulator screenshot from a
@@ -240,9 +287,12 @@ struct OrientationAwareCoordinates {
     /// Only the PNG header is read from the temporary file, which is removed
     /// before this function returns.
     ///
-    /// Returns `nil` if the process fails or the output is not a valid PNG.
+    /// - Parameter displayID: Display to capture on multi-display simulators. simctl refuses to
+    ///   choose between several displays without it.
+    /// - Returns: `nil` if the process fails or the output is not a valid PNG.
     static func screenshotPixelDimensions(
         for simulatorUDID: String,
+        displayID: Int? = nil,
         logger: AxeLogger
     ) async -> (width: Int, height: Int)? {
         let tempURL = FileManager.default.temporaryDirectory
@@ -250,9 +300,15 @@ struct OrientationAwareCoordinates {
             .appendingPathExtension("png")
         defer { try? FileManager.default.removeItem(at: tempURL) }
 
+        var arguments = ["simctl", "io", simulatorUDID, "screenshot", "--type", "png"]
+        if let displayID {
+            arguments.append("--display=\(displayID)")
+        }
+        arguments.append(tempURL.path)
+
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/xcrun")
-        process.arguments = ["simctl", "io", simulatorUDID, "screenshot", "--type", "png", tempURL.path]
+        process.arguments = arguments
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
 

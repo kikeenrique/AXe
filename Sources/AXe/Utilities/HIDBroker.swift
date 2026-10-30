@@ -24,8 +24,28 @@ struct HIDBrokerPrimitive: Codable, Equatable {
     }
 }
 
-private struct HIDBrokerRequest: Codable {
+struct HIDBrokerRequest: Codable, Equatable {
     let primitives: [HIDBrokerPrimitive]
+    /// The client's `AXE_DISPLAY_PROBE` policy. Optional so brokers that predate the field ignore
+    /// it and requests from older clients fall back to the broker's own environment.
+    let displayProbe: DisplayProbePolicy?
+
+    init(primitives: [HIDBrokerPrimitive], displayProbe: DisplayProbePolicy? = nil) {
+        self.primitives = primitives
+        self.displayProbe = displayProbe
+    }
+
+    /// Delay-only requests send no input, so they skip the foldable touch guard.
+    var sendsTouches: Bool {
+        primitives.contains { $0.kind != .delay }
+    }
+}
+
+/// Outcome of executing one broker request.
+struct HIDBrokerExecutionResult {
+    let error: Error?
+    /// `false` when an HID send failed and the broker session should be discarded.
+    let shouldContinue: Bool
 }
 
 struct HIDBrokerBootIdentity: Equatable {
@@ -57,9 +77,10 @@ enum HIDBroker {
 
     static func sendTouchPrimitives(
         _ primitives: [HIDBrokerPrimitive],
+        displayProbe: DisplayProbePolicy = DisplayProbePolicy.current(),
         descriptorProvider: () throws -> Int32
     ) throws {
-        let request = HIDBrokerRequest(primitives: primitives)
+        let request = HIDBrokerRequest(primitives: primitives, displayProbe: displayProbe)
         var requestData = try JSONEncoder().encode(request)
         requestData.append(0x0A)
         guard requestData.count <= maximumMessageBytes else {
@@ -142,10 +163,62 @@ enum HIDBroker {
             return true
         }
 
-        var shouldContinue = true
+        let request: HIDBrokerRequest
         do {
             let data = try readMessage(from: client)
-            let request = try JSONDecoder().decode(HIDBrokerRequest.self, from: data)
+            request = try JSONDecoder().decode(HIDBrokerRequest.self, from: data)
+        } catch {
+            logger.error().log("HID broker request failed: \(error.localizedDescription)")
+            try? writeResponse(error: brokerResponseDescription(for: error), to: client)
+            return true
+        }
+
+        // The broker outlives a single command: follow the client's probe policy and re-read the
+        // fold state for every request.
+        SimulatorDisplays.policyOverride = request.displayProbe
+        SimulatorDisplays.invalidateCachedState()
+        defer { SimulatorDisplays.policyOverride = nil }
+
+        let result = await execute(
+            request,
+            enforceTouchGuard: {
+                try await FoldableTouchGuard.enforce(for: session.simulator, logger: logger)
+            },
+            sendTouch: { direction, x, y in
+                try await HIDInteractor.performHIDEvent(
+                    .touch(direction: direction, x: x, y: y),
+                    in: session,
+                    logger: logger
+                )
+            },
+            sleep: { duration in
+                try await Task.sleep(for: .seconds(duration))
+            }
+        )
+        if let error = result.error {
+            logger.error().log("HID broker request failed: \(error.localizedDescription)")
+            try? writeResponse(error: brokerResponseDescription(for: error), to: client)
+        } else {
+            try? writeResponse(error: nil, to: client)
+        }
+        return result.shouldContinue
+    }
+
+    /// Executes one decoded request.
+    ///
+    /// The touch guard runs before the first primitive, so a blocked request sends no input and keeps
+    /// the broker alive. Only a failed HID send ends the broker session.
+    @MainActor
+    static func execute(
+        _ request: HIDBrokerRequest,
+        enforceTouchGuard: @MainActor () async throws -> Void,
+        sendTouch: @MainActor (FBSimulatorHIDDirection, Double, Double) async throws -> Void,
+        sleep: @MainActor (Double) async throws -> Void
+    ) async -> HIDBrokerExecutionResult {
+        do {
+            if request.sendsTouches {
+                try await enforceTouchGuard()
+            }
             for primitive in request.primitives {
                 switch primitive.kind {
                 case .down, .up:
@@ -154,28 +227,21 @@ enum HIDBroker {
                     }
                     let direction: FBSimulatorHIDDirection = primitive.kind == .down ? .down : .up
                     do {
-                        try await HIDInteractor.performHIDEvent(
-                            .touch(direction: direction, x: x, y: y),
-                            in: session,
-                            logger: logger
-                        )
+                        try await sendTouch(direction, x, y)
                     } catch {
-                        shouldContinue = false
-                        throw error
+                        return HIDBrokerExecutionResult(error: error, shouldContinue: false)
                     }
                 case .delay:
                     guard let duration = primitive.duration, duration >= 0, duration <= 10 else {
                         throw CLIError(errorDescription: "HID broker delay is invalid.")
                     }
-                    try await Task.sleep(for: .seconds(duration))
+                    try await sleep(duration)
                 }
             }
-            try writeResponse(error: nil, to: client)
+            return HIDBrokerExecutionResult(error: nil, shouldContinue: true)
         } catch {
-            logger.error().log("HID broker request failed: \(error.localizedDescription)")
-            try? writeResponse(error: brokerResponseDescription(for: error), to: client)
+            return HIDBrokerExecutionResult(error: error, shouldContinue: true)
         }
-        return shouldContinue
     }
 
     static func brokerResponseDescription(for error: Error) -> String {

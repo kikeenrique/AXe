@@ -39,6 +39,7 @@ Most HID commands (`tap`, `swipe`, `drag`, `type`, `key`, etc.) are fire-and-for
 - Use `--pre-delay` / `--post-delay` on tap, swipe, and gesture commands for fixed delays around actions.
 - Use `--duration` to control how long a swipe, gesture, button press, or key press lasts.
 - Coordinate-based `tap`, `swipe`, `drag`, and `touch` accept coordinates from `describe-ui` directly; AXe detects rotated landscape simulator orientation and letterboxed landscape-only app layouts automatically.
+- Foldable simulators (iPhone Duo): `screenshot` captures the active display (`--display auto`, the default); pass `--display cover|inner|<id>|<name>` to choose. Touch commands fail with an explicit error while the inner display is active; they work while the cover display is active. Do not treat that error as transient or retry it.
 - Use `axe slider --id <identifier> --value <0-100>` for sliders instead of approximating with raw swipe coordinates; it uses one calibrated low-level HID drag from the resolved slider frame/current AXValue, through the same composite touch-move path as `drag`, verifies the result within tolerance, and fails clearly if the observed AXValue remains outside tolerance.
 - For text with shell-sensitive characters, prefer `--stdin` or `--file` over inline quotes.
 - Use single quotes for inline text arguments to avoid shell expansion issues.

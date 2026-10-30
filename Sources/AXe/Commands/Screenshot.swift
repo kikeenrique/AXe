@@ -15,6 +15,12 @@ struct Screenshot: AsyncParsableCommand {
     @Option(help: "Output PNG file path. Defaults to 'Simulator Screenshot - <device name> - <timestamp>.png' in the current directory.")
     var output: String?
 
+    @Option(
+        name: .customLong("display"),
+        help: "Display to capture: auto (the active display), cover, inner, a display ID, or a display name. cover and inner apply to foldable simulators."
+    )
+    var display: DisplaySelection = .auto
+
     func run() async throws {
         let logger = AxeLogger()
         try await performGlobalSetup(logger: logger)
@@ -36,9 +42,22 @@ struct Screenshot: AsyncParsableCommand {
 
         let outputURL = try prepareOutputURL(simulator: targetSimulator)
 
-        let screenshotData = try await VideoFrameUtilities.captureScreenshotData(from: targetSimulator)
-
-        try screenshotData.write(to: outputURL)
+        if let displayArgument = try await SimulatorDisplays.screenshotDisplayArgument(
+            selection: display,
+            simulator: targetSimulator,
+            logger: logger
+        ) {
+            // FBSimulator.takeScreenshot always reads the first framebuffer (the inner display of a
+            // foldable), so a specific display is captured through simctl.
+            try await SimulatorDisplays.captureScreenshot(
+                simulatorUDID: trimmedUDID,
+                display: displayArgument,
+                to: outputURL
+            )
+        } else {
+            let screenshotData = try await VideoFrameUtilities.captureScreenshotData(from: targetSimulator)
+            try screenshotData.write(to: outputURL)
+        }
 
         FileHandle.standardError.write(Data("Screenshot saved to \(outputURL.path)\n".utf8))
         print(outputURL.path)
@@ -95,5 +114,26 @@ struct Screenshot: AsyncParsableCommand {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd 'at' HH.mm.ss"
         return formatter.string(from: date)
+    }
+}
+
+extension DisplaySelection: ExpressibleByArgument {
+    static var defaultCompletionKind: CompletionKind {
+        .list(["auto", "cover", "inner"])
+    }
+
+    var defaultValueDescription: String {
+        switch self {
+        case .auto:
+            return "auto"
+        case .cover:
+            return "cover"
+        case .inner:
+            return "inner"
+        case .id(let identifier):
+            return String(identifier)
+        case .name(let name):
+            return name
+        }
     }
 }
