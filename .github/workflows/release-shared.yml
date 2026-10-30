@@ -362,10 +362,9 @@ jobs:
           TAP_NAME="local/axe-test-${{ github.run_id }}"
           TAP_SOURCE_DIR="$TEST_ROOT/homebrew-axe-test"
           FORMULA_PATH="$TAP_SOURCE_DIR/Formula/axe.rb"
-          HOMEBREW_CACHE_DIR="$TEST_ROOT/cache"
 
           rm -rf "$TEST_ROOT"
-          mkdir -p "$TEST_ROOT" "$TAP_SOURCE_DIR/Formula" "$HOMEBREW_CACHE_DIR"
+          mkdir -p "$TEST_ROOT" "$TAP_SOURCE_DIR/Formula"
 
           scripts/generate-homebrew-formula.sh \
             --formula-class "Axe" \
@@ -381,9 +380,13 @@ jobs:
           git -C "$TAP_SOURCE_DIR" add Formula/axe.rb
           git -C "$TAP_SOURCE_DIR" -c commit.gpgsign=false commit -m "Add axe formula for smoke test"
 
-          HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_CACHE="$HOMEBREW_CACHE_DIR" brew untap "$TAP_NAME" >/dev/null 2>&1 || true
-          HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_CACHE="$HOMEBREW_CACHE_DIR" brew tap "$TAP_NAME" "$TAP_SOURCE_DIR"
-          HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_CACHE="$HOMEBREW_CACHE_DIR" brew install "$TAP_NAME/axe"
+          # Use the runner's default Homebrew cache (warmed by "Install dependencies").
+          # Homebrew relocates installed Mach-O files in a sandbox that may only write
+          # the keg; with an empty custom HOMEBREW_CACHE it tries to create
+          # api/formula_names.txt there, hits EPERM and fails "fix install linkage".
+          HOMEBREW_NO_AUTO_UPDATE=1 brew untap "$TAP_NAME" >/dev/null 2>&1 || true
+          HOMEBREW_NO_AUTO_UPDATE=1 brew tap "$TAP_NAME" "$TAP_SOURCE_DIR"
+          HOMEBREW_NO_AUTO_UPDATE=1 brew install "$TAP_NAME/axe"
 
           BREW_AXE_PREFIX=$(brew --prefix "$TAP_NAME/axe")
           "$BREW_AXE_PREFIX/bin/axe" --version
