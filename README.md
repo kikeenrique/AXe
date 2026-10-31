@@ -102,6 +102,16 @@ axe describe-ui --focused --udid "$UDID" # the focused element
 
 To validate a release payload unchanged under another supported Xcode, first build the test bundle with that Xcode, then run `AXE_BIN_PATH=/path/to/release/axe ./test-runner.sh --tests-only`. The supplied executable must keep its packaged `AXe_AXe.bundle` and `Resources/` beside it.
 
+## Release builds
+
+The Release Staging workflow validates pull requests and publishes a staging prerelease on every push to `main` or to a `staging/**` branch, and for pull requests labelled `publish-staging` (when the label is added and on each new commit). A pull request publish builds, tags and targets the head branch, not the merge commit; it runs only for pull requests from a branch of the same repository, since a fork's branch cannot be checked out here and its runs get no secrets and a read-only token. The Release workflow ships version tags. Both use `.github/workflows/release-shared.yml`.
+
+Signed, notarized builds need the `DEVELOPER_ID_APPLICATION_P12`, `NOTARIZE_APP_STORE_CONNECT_API_KEY`, `NOTARIZE_APP_STORE_CONNECT_API_KEY_ID` and `NOTARIZE_APP_STORE_CONNECT_ISSUER_ID` secrets. A repository without all of them, such as a fork, still publishes staging prereleases and, for a `v*` tag, a release, but they are unsigned and not notarized: the title ends in "(unsigned)" and the notes explain that Gatekeeper may block the build and that `xattr -dr com.apple.quarantine` on the extracted files (or a build from source) gets past that. A tag with a `-` in its version (for example `v1.8.0-fork.1`) is published as a prerelease.
+
+Every release carries `AXe-macOS-<tag>-universal.tar.gz`, `AXe-macOS-homebrew-<tag>.tar.gz`, `axe-aarch64-apple-darwin.tar.gz` (the Homebrew archive's exact bytes under a name that stays the same across releases, for Homebrew taps that pull by tag) and `SHA256SUMS`, which lists the three archives by file name so that `shasum -a 256 -c SHA256SUMS` passes in the download folder. Validation and `workflow_dispatch` verification runs upload the same four files as workflow artifacts.
+
+The Homebrew taps and the install commands in the release notes follow the owner of the repository that runs the workflow: `<owner>/homebrew-axe` for production and `<owner>/homebrew-axe-staging` for staging, updated with the `HOMEBREW_TAP_TOKEN` and `HOMEBREW_STAGING_TAP_TOKEN` secrets. Without a token the tap update is skipped with a notice for staging builds and unsigned releases; a signed production release fails without it.
+
 ## Basic usage
 
 ```bash

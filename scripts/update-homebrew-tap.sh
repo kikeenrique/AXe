@@ -8,6 +8,7 @@ ARCHIVE_URL=""
 ARCHIVE_SHA=""
 HOMEPAGE=""
 TOKEN=""
+TAP_OWNER=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -35,6 +36,10 @@ while [[ $# -gt 0 ]]; do
       TOKEN="${2:-}"
       shift 2
       ;;
+    --tap-owner)
+      TAP_OWNER="${2:-}"
+      shift 2
+      ;;
     *)
       echo "Unknown argument: $1" >&2
       exit 1
@@ -42,17 +47,23 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ -z "$TARGET" || -z "$VERSION" || -z "$ARCHIVE_URL" || -z "$ARCHIVE_SHA" || -z "$HOMEPAGE" || -z "$TOKEN" ]]; then
-  echo "Usage: $0 --target production|staging --version VERSION --archive-url URL --archive-sha SHA --homepage URL --token TOKEN" >&2
+if [[ -z "$TARGET" || -z "$VERSION" || -z "$ARCHIVE_URL" || -z "$ARCHIVE_SHA" || -z "$HOMEPAGE" || -z "$TOKEN" || -z "$TAP_OWNER" ]]; then
+  echo "Usage: $0 --target production|staging --tap-owner OWNER --version VERSION --archive-url URL --archive-sha SHA --homepage URL --token TOKEN" >&2
+  echo "  production updates OWNER/homebrew-axe, staging updates OWNER/homebrew-axe-staging" >&2
+  exit 1
+fi
+
+if [[ ! "$TAP_OWNER" =~ ^[A-Za-z0-9][A-Za-z0-9-]*$ ]]; then
+  echo "Invalid --tap-owner: $TAP_OWNER (expected a GitHub user or organisation name)" >&2
   exit 1
 fi
 
 case "$TARGET" in
   production)
-    TAP_REPO="cameroncooke/homebrew-axe"
+    TAP_REPO="${TAP_OWNER}/homebrew-axe"
     ;;
   staging)
-    TAP_REPO="cameroncooke/homebrew-axe-staging"
+    TAP_REPO="${TAP_OWNER}/homebrew-axe-staging"
     ;;
   *)
     echo "Unsupported target: $TARGET" >&2
