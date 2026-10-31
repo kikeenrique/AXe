@@ -710,7 +710,7 @@ struct BatchCrownStepTests {
 struct BatchPlatformPreflightTests {
     private func refusal(_ steps: [String], on platform: SimulatorPlatform) -> String? {
         do {
-            try Batch.checkPlatform(of: steps, on: platform)
+            try Batch.checkSteps(steps, udid: "SIMULATOR_UDID", on: platform)
             return nil
         } catch let error as CLIError {
             return error.message
@@ -748,16 +748,135 @@ struct BatchPlatformPreflightTests {
         #expect(text.hasPrefix("Step 2 failed: [\(step.split(separator: " ")[0])]\n\(prefix)"))
     }
 
-    @Test("Steps the platform takes pass, and steps that do not parse are left to fail when they run")
+    @Test("Steps the platform takes and that parse pass")
     func accepted() {
         #expect(refusal(["remote up", "type abc", "key-sequence --keycodes 4,5", "button play-pause", "sleep 1"], on: .tvOS) == nil)
         #expect(refusal(["crown --delta 50", "tap --label Settings", "button home", "swipe --start-x 1 --start-y 1 --end-x 2 --end-y 2"], on: .watchOS) == nil)
-        #expect(refusal(["tap -x 1 -y 1", "rotate landscape", "hinge open", "button apple-pay"], on: .iOS) == nil)
-        #expect(refusal(["unknown-step", "button not-a-button", "type 'unterminated"], on: .tvOS) == nil)
+        #expect(refusal(["tap -x 1 -y 1", "rotate landscape", "hinge open", "button apple-pay", "key-combo --modifiers 227 --key 4"], on: .iOS) == nil)
+        #expect(refusal(["button --duration 1 play-pause"], on: .tvOS) == nil)
+    }
+
+    @Test(
+        "Malformed steps fail the batch before any step runs",
+        arguments: [
+            ("unknown-step", "unknown-step", "Unsupported batch step 'unknown-step'."),
+            ("type 'unterminated", "<unparsed>", ""),
+            ("button not-a-button", "button", ""),
+            ("crown --steps 0 --delta 50", "crown", "--steps must be between 1 and 1000."),
+            ("crown --delta 0", "crown", "--delta must be a non-zero number"),
+            ("remote up --count 0", "remote", "--count must be between 1 and"),
+            ("tap --label Settings --udid OTHER", "tap", "Per-step --udid is not supported"),
+            ("sleep -1", "sleep", "Sleep step requires a non-negative number of seconds."),
+            ("hinge sweep", "hinge", "Hinge step format"),
+            ("rotate sideways", "rotate", "Rotate step format"),
+            ("swipe --start-x 1 --start-y 1 --end-x 1 --end-y 1", "swipe", ""),
+        ]
+    )
+    func malformed(step: String, name: String, message: String) throws {
+        let platform: SimulatorPlatform = step.hasPrefix("crown") ? .watchOS : step.hasPrefix("remote") ? .tvOS : .iOS
+        let text = try #require(refusal(["sleep 0", step, "tap -x 1 -y 1"], on: platform))
+        #expect(text.hasPrefix("Step 2 failed: [\(name)]\n\(message)"))
+        #expect(text.hasSuffix("No step was run: every step is parsed and checked against the simulator's platform before the batch starts."))
+    }
+
+    @Test("A button refused by the platform is found wherever its name sits among the options")
+    func buttonAfterOptions() throws {
+        let text = try #require(refusal(["remote up", "button --duration 1 home"], on: .tvOS))
+        #expect(text.hasPrefix("Step 2 failed: [button]\nButton 'home' is not available on tvOS simulators"))
+        let applePay = try #require(refusal(["button --duration 1 apple-pay"], on: .watchOS))
+        #expect(applePay.hasPrefix("Step 1 failed: [button]\nButton 'apple-pay' is not available on watchOS simulators"))
     }
 
     @Test("The first refused step is reported")
     func firstRefusal() {
         #expect(refusal(["tap -x 1 -y 1", "crown --delta 5"], on: .tvOS)?.hasPrefix("Step 1 failed: [tap]") == true)
+        #expect(refusal(["crown --delta 5", "crown --steps 0 --delta 5", "tap -x 1 -y 1"], on: .tvOS)?.hasPrefix("Step 1 failed: [crown]") == true)
+    }
+
+    @Test("Batch checks the steps before opening a session, and not with --continue-on-error")
+    func preflightWiring() async throws {
+        var lookups = 0
+        let steps = ["remote up", "button --duration 1 home"]
+        await #expect(throws: CLIError.self) {
+            try await Batch.preflight(steps, udid: "SIMULATOR_UDID", continueOnError: false) {
+                lookups += 1
+                return .tvOS
+            }
+        }
+        #expect(lookups == 1)
+        try await Batch.preflight(steps, udid: "SIMULATOR_UDID", continueOnError: true) {
+            lookups += 1
+            return .tvOS
+        }
+        #expect(lookups == 1)
+        try await Batch.preflight(["remote up", "button play-pause"], udid: "SIMULATOR_UDID", continueOnError: false) { .tvOS }
+    }
+
+    @Test("Batch help documents the up-front parse")
+    func help() {
+        #expect(Batch.configuration.discussion.contains("every step's arguments are parsed"))
+    }
+}
+
+@Suite("Batch runner cache invalidation")
+@MainActor
+struct BatchRunnerCacheTests {
+    private func seededContext() throws -> BatchContext {
+        let context = BatchContext(simulatorUDID: "SIMULATOR_UDID", axCachePolicy: .perBatch, typeSubmissionMode: .chunked, typeChunkSize: 200)
+        let json = #"[{"type":"Application","frame":{"x":0,"y":0,"width":10,"height":10},"children":[]}]"#
+        context.cachedRoots = try JSONDecoder().decode([AccessibilityElement].self, from: Data(json.utf8))
+        return context
+    }
+
+    @Test("A crown step drops the perBatch accessibility snapshot")
+    func crownDropsSnapshot() throws {
+        let context = try seededContext()
+        #expect(context.cachedRoots != nil)
+        let crown = BatchPrimitive.crownRotation(CrownRotation(delta: 50, steps: 10, intervalMilliseconds: 16))
+        #expect(crown.invalidatesAccessibilitySnapshot)
+        #expect(!crown.invalidatesDisplayState)
+        BatchPlanRunner.invalidateCaches(after: crown, context: context)
+        #expect(context.cachedRoots == nil)
+    }
+
+    @Test("Hinge and rotate steps drop the snapshot and display state; touch, key and button steps keep the snapshot")
+    func otherPrimitives() throws {
+        let rotate = BatchPrimitive.deviceState(.rotate(.landscape))
+        #expect(rotate.invalidatesAccessibilitySnapshot)
+        #expect(rotate.invalidatesDisplayState)
+
+        let kept: [BatchPrimitive] = [
+            .hidMergeable(.tapAt(x: 1, y: 1)),
+            .hidBarrier(.shortKeyPress(4)),
+            .hostSleep(0),
+            .physicalTap(point: (x: 1, y: 1), preDelay: nil, postDelay: nil),
+            .buttonPress(.home, duration: nil),
+        ]
+        let context = try seededContext()
+        for primitive in kept {
+            #expect(!primitive.invalidatesAccessibilitySnapshot)
+            #expect(!primitive.invalidatesDisplayState)
+            BatchPlanRunner.invalidateCaches(after: primitive, context: context)
+        }
+        #expect(context.cachedRoots != nil)
+    }
+}
+
+@Suite("Crown errors")
+struct CrownErrorTests {
+    @Test("IDB's missing DTUHID crown service and missing XPC symbols map to the Xcode 27 message")
+    func dtuhidErrors() throws {
+        let notVended = try #require(CrownRotation.userFacingError(for: SimulatorHIDError.dtuhidServiceNotVended(name: "com.apple.dtuhidd.scroll")) as? CLIError)
+        #expect(notVended.message.contains("(com.apple.dtuhidd.scroll)"))
+        #expect(notVended.message.contains("Xcode 27 or later"))
+        #expect(notVended.message.hasSuffix("No rotation was sent."))
+
+        let noSymbols = try #require(CrownRotation.userFacingError(for: SimulatorHIDError.dtuhidXPCSymbolsUnavailable) as? CLIError)
+        #expect(noSymbols.message.contains("Xcode 27 or later"))
+        #expect(noSymbols.message.hasSuffix("No rotation was sent."))
+
+        let other = CrownRotation.userFacingError(for: SimulatorHIDError.dtuhidConnectionFailed)
+        #expect(other is SimulatorHIDError)
+        #expect(!(other is CLIError))
     }
 }

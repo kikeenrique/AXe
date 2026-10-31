@@ -111,7 +111,7 @@ struct AccessibilityFetcher {
     /// the main display (see `DescribeUIOutput`). Elsewhere, or with `allDisplays`, the
     /// simulator's output is returned unchanged.
     ///
-    /// With `focusedOnly`, only the focused element of that tree is returned, with its subtree
+    /// With `focusedOnly`, only the focused element of that tree is returned, without its children
     /// (`DescribeUIOutput.focusedElementData`).
     static func fetchDescribeUIJSONData(
         for simulatorUDID: String,

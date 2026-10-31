@@ -289,12 +289,19 @@ struct DevicePosture: Encodable, Equatable {
         }
     }
 
-    /// The interface size in points. devicectl reports an Apple TV's TVOut with a zero native size;
-    /// its bounds (in points at scale 1) are used then.
+    /// The interface size in points: the native size turned by the display's rotation.
+    ///
+    /// devicectl reports an Apple TV's TVOut with a 0x0 native size; an external display, or one
+    /// reported that way, is sized from its bounds instead, divided by its point scale when one is
+    /// reported. An integrated display without a usable native size and point scale has no size:
+    /// its bounds are pixels in the native orientation and say nothing about the interface.
     static func interfaceSize(of display: SimulatorDisplay) -> Size? {
         guard let native = display.nativeSizePoints, native.width > 0, native.height > 0 else {
-            guard let bounds = display.bounds, bounds.width > 0, bounds.height > 0 else { return nil }
-            return Size(width: bounds.width, height: bounds.height)
+            let zeroNativeSize = display.nativeSize.map { $0.width == 0 && $0.height == 0 } ?? false
+            guard !display.isIntegrated || zeroNativeSize,
+                  let bounds = display.bounds, bounds.width > 0, bounds.height > 0 else { return nil }
+            let scale = display.pointScale.flatMap { $0 > 0 ? $0 : nil } ?? 1
+            return Size(width: bounds.width / scale, height: bounds.height / scale)
         }
         switch display.currentRotation {
         case .rot90, .rot270:

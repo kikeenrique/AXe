@@ -82,7 +82,7 @@ Key rules:
 - Add `--continue-on-error` for best-effort execution.
 - Do not pass `--udid` inside step lines; keep it at batch level.
 - On tvOS use `remote <action> [--count N] [--delay ms]` steps; touch steps are refused there. On watchOS use `crown --delta <d>` steps to scroll.
-- Before any step runs, batch checks every step against the simulator's platform; a refused step (a `tap` on tvOS, `crown` off watchOS, `rotate` off iOS) fails the batch with nothing sent. With `--continue-on-error` it fails at its turn instead.
+- Before any step runs, batch parses every step and checks it against the simulator's platform; a malformed step (`crown --steps 0`) or a refused one (a `tap` on tvOS, `crown` off watchOS, `rotate` off iOS) fails the batch with nothing sent. With `--continue-on-error` it fails at its turn instead.
 - `hinge <set <degrees>|open|close|half>` and `rotate <orientation>` steps are barriers; later steps re-read display and accessibility state, so touch steps after a fold or rotation go to the newly active display.
 
 ## Step 6: Verify outcomes

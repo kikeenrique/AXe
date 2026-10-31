@@ -7,10 +7,11 @@ struct Batch: AsyncParsableCommand {
         abstract: "Execute ordered interaction steps using one simulator/HID session.",
         discussion: """
         Batch executes multiple interaction steps in one command to reduce overhead.
-        Steps are executed in order. Before any step runs, every step is checked against the
-        simulator's platform (touch off tvOS, remote on tvOS only, crown on watchOS only, rotate and
-        hinge on iOS only, the platform's buttons); a refused step fails the batch with nothing sent.
-        With --continue-on-error a refused step fails when its turn comes instead.
+        Steps are executed in order. Before any step runs, every step's arguments are parsed and
+        the step is checked against the simulator's platform (touch off tvOS, remote on tvOS only,
+        crown on watchOS only, rotate and hinge on iOS only, the platform's buttons); a malformed or
+        refused step fails the batch with nothing sent. With --continue-on-error such a step fails
+        when its turn comes instead.
 
         Supported step commands:
           tap, swipe, gesture, touch, type, button, key, key-sequence, key-combo,
@@ -109,9 +110,8 @@ struct Batch: AsyncParsableCommand {
             )
         }
 
-        if !continueOnError {
-            let platform = try await SimulatorSession.requirePlatform(udid: simulatorUDID, logger: logger)
-            try Self.checkPlatform(of: stepLines, on: platform)
+        try await Self.preflight(stepLines, udid: simulatorUDID, continueOnError: continueOnError) {
+            try await SimulatorSession.requirePlatform(udid: simulatorUDID, logger: logger)
         }
 
         let session = try await HIDInteractor.makeSession(for: simulatorUDID, logger: logger)
@@ -150,19 +150,33 @@ struct Batch: AsyncParsableCommand {
         print("✓ Batch completed successfully (\(stepLines.count) steps)")
     }
 
-    /// Checks every step against the simulator's platform before any step runs, so a step the
-    /// platform refuses (a touch step on tvOS, `crown` off watchOS, `rotate` off iOS) fails the batch
-    /// with nothing sent, instead of after the earlier steps have been applied. Throws the first
-    /// refusal, in the shape of a step failure. Steps that do not tokenize are left to fail when
-    /// they run.
-    static func checkPlatform(of stepLines: [String], on platform: SimulatorPlatform) throws {
+    /// Runs `checkSteps` before the HID session is opened, unless `continueOnError` is set: then
+    /// each step fails on its own turn and the platform is not looked up here.
+    static func preflight(
+        _ stepLines: [String],
+        udid: String,
+        continueOnError: Bool,
+        platform: () async throws -> SimulatorPlatform
+    ) async throws {
+        guard !continueOnError else { return }
+        try checkSteps(stepLines, udid: udid, on: try await platform())
+    }
+
+    /// Parses every step and checks it against the simulator's platform before any step runs, so
+    /// a malformed step (`crown --steps 0`, an unknown step, an unterminated quote) or one the
+    /// platform refuses (a touch step on tvOS, `crown` off watchOS, `rotate` off iOS) fails the
+    /// batch with nothing sent, instead of after the earlier steps have been applied. Throws the
+    /// first failure, in the shape of a step failure.
+    static func checkSteps(_ stepLines: [String], udid: String, on platform: SimulatorPlatform) throws {
         for (index, line) in stepLines.enumerated() {
-            guard let tokens = try? ShellTokenizer.tokenize(line) else { continue }
+            var stepName = "<unparsed>"
             do {
-                try BatchStepParser.checkPlatform(ofStep: tokens, on: platform)
+                let tokens = try ShellTokenizer.tokenize(line)
+                stepName = tokens.first ?? "<empty>"
+                try BatchStepParser.preflight(ofStep: tokens, globalUDID: udid, on: platform)
             } catch {
                 throw CLIError(
-                    errorDescription: "Step \(index + 1) failed: [\(tokens.first ?? "<empty>")]\n\(stepFailureMessage(for: error))\nNo step was run: every step is checked against the simulator's platform before the batch starts."
+                    errorDescription: "Step \(index + 1) failed: [\(stepName)]\n\(stepFailureMessage(for: error))\nNo step was run: every step is parsed and checked against the simulator's platform before the batch starts."
                 )
             }
         }

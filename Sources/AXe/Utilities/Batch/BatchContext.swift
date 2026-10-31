@@ -22,7 +22,8 @@ final class BatchContext {
     let waitTimeout: TimeInterval
     let pollInterval: TimeInterval
 
-    private var cachedRoots: [AccessibilityElement]?
+    /// The `perBatch` snapshot. Internal so tests can seed it.
+    var cachedRoots: [AccessibilityElement]?
 
     init(
         simulatorUDID: String,
@@ -42,7 +43,7 @@ final class BatchContext {
         self.pollInterval = pollInterval
     }
 
-    /// Drops the cached accessibility tree, for example after a fold or rotation.
+    /// Drops the cached accessibility tree, for example after a fold, rotation or crown turn.
     func invalidateAccessibilityCache() {
         cachedRoots = nil
     }

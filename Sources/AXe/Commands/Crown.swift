@@ -46,10 +46,25 @@ struct CrownRotation: Equatable, Sendable {
         logger.info().log("Turning the Digital Crown by \(delta) in \(steps) step(s) \(intervalMilliseconds) ms apart")
         do {
             try await simulator.hid.rotateDigitalCrown(by: delta, steps: steps, interval: interval)
-        } catch SimulatorHIDError.dtuhidServiceNotVended(let name) {
-            throw CLIError(
+        } catch {
+            throw Self.userFacingError(for: error)
+        }
+    }
+
+    /// Maps IDB's "no DTUHID crown input here" errors to a message naming the Xcode 27 requirement;
+    /// returns any other error unchanged.
+    static func userFacingError(for error: Error) -> Error {
+        switch error as? SimulatorHIDError {
+        case .dtuhidServiceNotVended(let name)?:
+            return CLIError(
                 errorDescription: "The simulator does not provide the Digital Crown input service (\(name)); it needs a watchOS runtime on Xcode 27 or later (DTUHID input). No rotation was sent."
             )
+        case .dtuhidXPCSymbolsUnavailable?:
+            return CLIError(
+                errorDescription: "This Xcode's CoreSimulator does not provide DTUHID input, which the Digital Crown needs; it needs Xcode 27 or later. No rotation was sent."
+            )
+        default:
+            return error
         }
     }
 }

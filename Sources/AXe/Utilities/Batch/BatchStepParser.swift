@@ -74,42 +74,79 @@ struct BatchStepParser {
         }
     }
 
-    /// Throws the refusal a step's command gives on `platform`, with the same checks the step runs
-    /// itself (`PlatformSupport`, `ButtonType.validate(for:)`). `Batch` checks every step with this
-    /// before it runs any, so a refused step does not leave earlier steps applied.
+    /// Parses a step's arguments with its command's parser and throws the error the step would give
+    /// for them, then throws the refusal its command gives on `platform`, with the same checks the
+    /// step runs itself (`PlatformSupport`, `ButtonType.validate(for:)`). `Batch` checks every step
+    /// with this before it runs any, so a malformed or refused step does not leave earlier steps
+    /// applied.
     ///
-    /// Only the platform is checked: a step that does not tokenize, names no known command or has a
-    /// button name that does not parse passes here and fails with its own error when it runs.
-    nonisolated static func checkPlatform(ofStep tokens: [String], on platform: SimulatorPlatform) throws {
-        guard let first = tokens.first, let kind = BatchStepKind(rawValue: first) else {
+    /// Pure: nothing is sent and the simulator is not queried. Errors that depend on simulator
+    /// state (an element that is not on screen, a step file that cannot be read) still surface when
+    /// the step runs.
+    nonisolated static func preflight(ofStep tokens: [String], globalUDID: String, on platform: SimulatorPlatform) throws {
+        guard let first = tokens.first else {
             return
         }
+        guard let kind = BatchStepKind(rawValue: first) else {
+            throw ValidationError("Unsupported batch step '\(first)'.")
+        }
+        if kind == .sleep {
+            _ = try parseSleep(tokens)
+            return
+        }
+
+        let stepArguments = Array(tokens.dropFirst())
+        try ensureNoPerStepUDID(stepArguments)
+        let arguments = stepArguments + ["--udid", globalUDID]
+
         switch kind {
-        case .tap, .swipe, .gesture, .touch:
+        case .tap:
+            _ = try parseStep(Tap.self, arguments: arguments)
             try PlatformSupport.check(.touch, on: platform)
-        case .type, .key, .keySequence, .keyCombo:
+        case .swipe:
+            _ = try parseStep(Swipe.self, arguments: arguments)
+            try PlatformSupport.check(.touch, on: platform)
+        case .gesture:
+            _ = try parseStep(Gesture.self, arguments: arguments)
+            try PlatformSupport.check(.touch, on: platform)
+        case .touch:
+            _ = try parseStep(Touch.self, arguments: arguments)
+            try PlatformSupport.check(.touch, on: platform)
+        case .type:
+            _ = try parseStep(Type.self, arguments: arguments)
+            try PlatformSupport.check(.keyboard, on: platform)
+        case .key:
+            _ = try parseStep(Key.self, arguments: arguments)
+            try PlatformSupport.check(.keyboard, on: platform)
+        case .keySequence:
+            _ = try parseStep(KeySequence.self, arguments: arguments)
+            try PlatformSupport.check(.keyboard, on: platform)
+        case .keyCombo:
+            _ = try parseStep(KeyCombo.self, arguments: arguments)
             try PlatformSupport.check(.keyboard, on: platform)
         case .button:
-            guard let button = tokens.dropFirst().first.flatMap(ButtonType.init(argument:)) else {
-                try PlatformSupport.check(.button, on: platform)
-                return
-            }
-            try button.validate(for: platform)
+            try parseStep(Button.self, arguments: arguments).buttonType.validate(for: platform)
         case .remote:
+            _ = try parseStep(Remote.self, arguments: arguments)
             try PlatformSupport.check(.remote, on: platform)
         case .crown:
+            _ = try parseStep(Crown.self, arguments: arguments)
             try PlatformSupport.check(.crown, on: platform)
-        case .hinge, .rotate:
+        case .hinge:
+            _ = try parseHinge(arguments)
+            try PlatformSupport.requireIOS(command: kind.rawValue, on: platform)
+        case .rotate:
+            _ = try parseRotate(arguments)
             try PlatformSupport.requireIOS(command: kind.rawValue, on: platform)
         case .sleep:
             return
         }
     }
 
-    static let hingeStepFormat = "Hinge step format: hinge <set <degrees>|open|close|half> [--duration <s>] [--no-wait]"
+    nonisolated static let hingeStepFormat = "Hinge step format: hinge <set <degrees>|open|close|half> [--duration <s>] [--no-wait]"
 
     /// Parses `hinge set|open|close|half` with the `axe hinge` parser; `sweep` and `get` are not steps.
-    private static func parseHinge(_ arguments: [String]) throws -> DeviceStateAction {
+    nonisolated private static func parseHinge(_ arguments: [String]) throws -> DeviceStateAction {
         let parsed: ParsableCommand
         do {
             parsed = try Hinge.parseAsRoot(arguments)
@@ -125,9 +162,9 @@ struct BatchStepParser {
         return moving.action
     }
 
-    static let rotateStepFormat = "Rotate step format: rotate <portrait|landscape|portrait-upside-down|landscape-flipped>"
+    nonisolated static let rotateStepFormat = "Rotate step format: rotate <portrait|landscape|portrait-upside-down|landscape-flipped>"
 
-    private static func parseRotate(_ arguments: [String]) throws -> DeviceStateAction {
+    nonisolated private static func parseRotate(_ arguments: [String]) throws -> DeviceStateAction {
         let rotate: Rotate
         do {
             rotate = try Rotate.parse(arguments)
@@ -146,20 +183,26 @@ struct BatchStepParser {
         context: BatchContext,
         logger: AxeLogger
     ) async throws -> [BatchPrimitive] {
+        let parsed = try parseStep(type, arguments: arguments)
+        return try await parsed.toBatchPrimitives(context: context, logger: logger)
+    }
+
+    /// Parses and validates `arguments` with `C`'s parser. Sends nothing.
+    nonisolated private static func parseStep<C: ParsableCommand>(_ type: C.Type, arguments: [String]) throws -> C {
         guard var parsed = try C.parseAsRoot(arguments) as? C else {
             throw CLIError(errorDescription: "Failed to parse batch step arguments: \(arguments.joined(separator: " "))")
         }
         try parsed.validate()
-        return try await parsed.toBatchPrimitives(context: context, logger: logger)
+        return parsed
     }
 
-    private static func ensureNoPerStepUDID(_ args: [String]) throws {
+    nonisolated private static func ensureNoPerStepUDID(_ args: [String]) throws {
         if args.contains(where: { $0 == "--udid" || $0.hasPrefix("--udid=") }) {
             throw ValidationError("Per-step --udid is not supported in batch steps. Use batch-level --udid.")
         }
     }
 
-    private static func parseSleep(_ tokens: [String]) throws -> [BatchPrimitive] {
+    nonisolated private static func parseSleep(_ tokens: [String]) throws -> [BatchPrimitive] {
         guard tokens.count == 2 else {
             throw ValidationError("Sleep step format: sleep <seconds>")
         }
