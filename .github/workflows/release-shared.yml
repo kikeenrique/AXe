@@ -107,6 +107,7 @@ jobs:
         run: |
           set -euo pipefail
           PINNED_IDB_URL="${{ steps.idb_inputs.outputs.idb_url }}"
+          PINNED_IDB_COMMIT="${{ steps.idb_inputs.outputs.idb_commit }}"
 
           if [ -d "idb_checkout/.git" ]; then
             LOCAL_COMMIT=$(git -C idb_checkout rev-parse HEAD)
