@@ -31,7 +31,7 @@ AXe supports Xcode 26 and Xcode 27. Xcode 27 simulator automation uses Device Hu
 
 Release artifacts are built once with the Xcode version selected by the release environment and run unchanged with either supported Xcode selected. Compatibility was validated with Xcode 26.5 (build `17F42`) and iOS 26.5 (`23F77`), and with Xcode 27 Beta 3 (build `27A5218g`) and iOS 27 (`24A5380g`).
 
-AXe builds upstream IDB ([facebook/idb](https://github.com/facebook/idb)) from the immutable revision configured in `scripts/build.sh` and links its libraries statically. The build does not apply a local patch queue. AXe requires macOS 15 or later on Apple silicon.
+AXe builds IDB from the immutable revision configured in `scripts/build.sh` and links its libraries statically: the `axe/platforms` branch of [kikeenrique/idb](https://github.com/kikeenrique/idb), which is upstream [facebook/idb](https://github.com/facebook/idb) v1.7.7 plus four patches proposed upstream (watchOS and tvOS accessibility trees read as XCTest, the watchOS Digital Crown, and the Apple TV's TVOut display). The build does not apply a local patch queue. AXe requires macOS 15 or later on Apple silicon.
 
 IDB loads CoreSimulator from the Xcode selected with `xcode-select`; it does not read `DEVELOPER_DIR`. AXe's own `xcrun` calls (`simctl`, `devicectl`) do honour `DEVELOPER_DIR`, so select the Xcode you want with `xcode-select` rather than overriding it with `DEVELOPER_DIR` alone.
 
@@ -64,6 +64,36 @@ axe hinge open --udid "$UDID"           # unfold flat: the inner display becomes
 axe tap --label Settings --udid "$UDID" # taps the inner display
 axe describe-ui --point 763,389 --udid "$UDID"   # element at an inner-display interface point
 axe rotate portrait --udid "$UDID"      # rotate the active display's interface
+```
+
+## Platforms
+
+`axe list-simulators` ends each line with the simulator's platform (`Platform 'iOS'`, `watchOS`, `tvOS`, `visionOS` or `unknown`; iPad simulators report `iOS`, and `unknown` is a platform AXe does not recognise, handled like iOS). AXe is built for iOS; on the other platforms commands that cannot work fail before anything is sent, with a message saying why. Probed on Xcode 27.2 with watchOS 27.2, tvOS 27.2 and visionOS 27.2 runtimes.
+
+| Command | watchOS | tvOS | visionOS |
+|---|---|---|---|
+| `list-simulators`, `record-video`, `stream-video` | yes | yes | yes |
+| `screenshot` | yes | yes (under 1 s) | yes |
+| `posture` | yes | yes: the `TVOut` display, role `external` | yes |
+| `tap -x -y`, `swipe`, `drag`, `touch`, `gesture` | yes (coordinates pass through; `gesture` presets fit the watch screen) | refused: use `axe remote` | refused |
+| `tap`/`slider` with `--id`, `--label`, `--value` | yes | refused | refused |
+| `describe-ui` | yes (about 30 elements on the clock face and app grid); `--point` works | yes; the focused element has `focused: true`, `--focused` prints it | partial skeleton |
+| `button` | `home` (Digital Crown press), `side-button`, `lock`, `siri` | `play-pause`, `volume-up`, `volume-down` | refused |
+| `crown --delta <d>` | yes (Digital Crown rotation; needs Xcode 27 or later) | refused | refused |
+| `remote up\|down\|left\|right\|select\|menu\|play-pause` | refused | yes | refused |
+| `type`, `key`, `key-sequence`, `key-combo` | sent, delivery unverified | yes: types straight into the focused text field | refused |
+| `rotate`, `hinge` | refused (iOS only) | refused | refused |
+| `batch` | as the single commands | as the single commands | refused |
+
+`batch` parses every step and checks it against the simulator's platform before it runs any, so a malformed step (`crown --steps 0`) or a refused one (a `tap` on tvOS, `crown` off watchOS) fails the batch with nothing sent.
+
+watchOS and tvOS applications answer their accessibility children only to automation clients, so the bundled IDB reads their trees as XCTest does. On tvOS, `describe-ui --focused` after `axe remote` shows where focus moved. visionOS input is refused because the bundled IDB drives only the touch digitizer service, which visionOS does not provide. The Siri Remote trackpad and visionOS pointer, gaze and hand input are not available.
+
+```bash
+axe crown --delta 50 --udid "$UDID"     # watchOS: scroll down about one and a half rows
+axe crown --delta=-50 --udid "$UDID"    # and back up
+axe remote down --udid "$UDID"          # tvOS: move focus
+axe describe-ui --focused --udid "$UDID" # the focused element
 ```
 
 ## E2E development

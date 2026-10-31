@@ -38,17 +38,20 @@ enum GesturePreset: String, CaseIterable, ExpressibleByArgument {
         let centerX = screenWidth / 2
         let centerY = screenHeight / 2
         let edgeMargin = 20.0
-        let scrollDistance = 200.0
-        
+        // 200 points, shortened to 60% of the screen along the scroll axis on screens narrower
+        // than about 333 points (a watch), so the scroll stays on the screen.
+        let verticalScroll = min(200.0, screenHeight * 0.6)
+        let horizontalScroll = min(200.0, screenWidth * 0.6)
+
         switch self {
         case .scrollUp:
-            return (centerX, centerY + scrollDistance/2, centerX, centerY - scrollDistance/2)
+            return (centerX, centerY + verticalScroll/2, centerX, centerY - verticalScroll/2)
         case .scrollDown:
-            return (centerX, centerY - scrollDistance/2, centerX, centerY + scrollDistance/2)
+            return (centerX, centerY - verticalScroll/2, centerX, centerY + verticalScroll/2)
         case .scrollLeft:
-            return (centerX + scrollDistance/2, centerY, centerX - scrollDistance/2, centerY)
+            return (centerX + horizontalScroll/2, centerY, centerX - horizontalScroll/2, centerY)
         case .scrollRight:
-            return (centerX - scrollDistance/2, centerY, centerX + scrollDistance/2, centerY)
+            return (centerX - horizontalScroll/2, centerY, centerX + horizontalScroll/2, centerY)
         case .swipeFromLeftEdge:
             return (edgeMargin, centerY, screenWidth - edgeMargin, centerY)
         case .swipeFromRightEdge:
@@ -100,10 +103,10 @@ struct Gesture: AsyncParsableCommand {
     @Argument(help: "The gesture preset to perform.")
     var preset: GesturePreset
     
-    @Option(name: .customLong("screen-width"), help: "Screen width in points (default: 390 for iPhone 15; the active display's width on the inner display of a foldable).")
+    @Option(name: .customLong("screen-width"), help: "Screen width in points (default: 390 for iPhone 15; the active display's width on the inner display of a foldable; the main screen's width on watchOS).")
     var screenWidth: Double?
 
-    @Option(name: .customLong("screen-height"), help: "Screen height in points (default: 844 for iPhone 15; the active display's height on the inner display of a foldable).")
+    @Option(name: .customLong("screen-height"), help: "Screen height in points (default: 844 for iPhone 15; the active display's height on the inner display of a foldable; the main screen's height on watchOS).")
     var screenHeight: Double?
     
     @Option(name: .customLong("duration"), help: "Duration of the gesture in seconds (uses preset default if not specified).")
@@ -168,14 +171,16 @@ struct Gesture: AsyncParsableCommand {
         try await setup(logger: logger)
         
         try await performGlobalSetup(logger: logger)
+        let platform = try await PlatformSupport.check(.touch, simulatorUDID: simulatorUDID, logger: logger)
 
         // The session records the device type, so non-foldables skip the display lookup cheaply.
         let session = try await HIDInteractor.makeSession(for: simulatorUDID, logger: logger)
         let target = try await TouchTarget.nonMainTarget(forSimulatorUDID: simulatorUDID, logger: logger)
-        let (width, height) = screenSize(target: target)
+        let mainScreen = await mainScreenSize(platform: platform, simulatorUDID: simulatorUDID, logger: logger)
+        let (width, height) = screenSize(target: target, mainScreen: mainScreen)
 
         // Get gesture coordinates
-        let coords = try coordinates(target: target)
+        let coords = try coordinates(target: target, mainScreen: mainScreen)
 
         // Use provided values or preset defaults
         let gestureDuration = duration ?? preset.defaultDuration
@@ -225,21 +230,54 @@ struct Gesture: AsyncParsableCommand {
         logger.info().log("Gesture completed successfully")
     }
 
+    /// The iPhone size presets fall back to on iOS when nothing else gives one.
+    static let defaultScreenSize = (width: 390.0, height: 844.0)
+
     /// Screen size for the preset: the options, else the interface size of a non-main active
-    /// display of a foldable, else 390x844.
-    func screenSize(target: TouchTarget?) -> (width: Double, height: Double) {
-        let interface = target?.interfacePointSize
+    /// display of a foldable, else `mainScreen` (the simulator's main screen in points, used off
+    /// iOS), else 390x844.
+    func screenSize(
+        target: TouchTarget?,
+        mainScreen: (width: Double, height: Double)? = nil
+    ) -> (width: Double, height: Double) {
+        let interface = target.map { (width: Double($0.interfacePointSize.width), height: Double($0.interfacePointSize.height)) }
+        let fallback = interface ?? mainScreen ?? Self.defaultScreenSize
         return (
-            width: screenWidth ?? interface?.width ?? 390.0,
-            height: screenHeight ?? interface?.height ?? 844.0
+            width: screenWidth ?? fallback.width,
+            height: screenHeight ?? fallback.height
         )
+    }
+
+    /// The main screen's size in points from IDB's screen info (pixels and scale), or `nil` when
+    /// it is unusable.
+    static func pointSize(screenInfo: TargetScreenInfo?) -> (width: Double, height: Double)? {
+        guard let screenInfo, screenInfo.scale > 0, screenInfo.widthPixels > 0, screenInfo.heightPixels > 0 else {
+            return nil
+        }
+        let scale = Double(screenInfo.scale)
+        return (width: Double(screenInfo.widthPixels) / scale, height: Double(screenInfo.heightPixels) / scale)
+    }
+
+    /// The size presets use off iOS when `--screen-width`/`--screen-height` are not both given:
+    /// the simulator's main screen in points. `nil` on iOS (and unrecognised platforms), which
+    /// keep the 390x844 default, and when the screen size is unknown.
+    @MainActor
+    func mainScreenSize(platform: SimulatorPlatform, simulatorUDID: String, logger: AxeLogger) -> (width: Double, height: Double)? {
+        guard !platform.usesPhoneCoordinateModel, screenWidth == nil || screenHeight == nil else {
+            return nil
+        }
+        let simulator = (try? SimulatorSession.simulator(udid: simulatorUDID, logger: logger)) ?? nil
+        return Self.pointSize(screenInfo: simulator?.screenInfo)
     }
 
     /// Preset coordinates ready for the HID event. Preset points are interface points and are sent
     /// unchanged; IDB rotates them to the active panel. On a non-main active display of a foldable
     /// they are checked against the panel first.
-    func coordinates(target: TouchTarget?) throws -> (startX: Double, startY: Double, endX: Double, endY: Double) {
-        let size = screenSize(target: target)
+    func coordinates(
+        target: TouchTarget?,
+        mainScreen: (width: Double, height: Double)? = nil
+    ) throws -> (startX: Double, startY: Double, endX: Double, endY: Double) {
+        let size = screenSize(target: target, mainScreen: mainScreen)
         let coords = preset.coordinates(screenWidth: size.width, screenHeight: size.height)
         guard let target else { return coords }
         let start = try target.checkedInterfacePoint((x: coords.startX, y: coords.startY))

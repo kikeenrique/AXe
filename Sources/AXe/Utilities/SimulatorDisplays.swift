@@ -186,6 +186,9 @@ struct SimulatorDisplay: Decodable, Equatable {
 
 /// Integrated displays of one simulator plus the device orientation.
 ///
+/// A simulator that reports displays but no integrated one keeps its sole primary display, as IDB
+/// targets it: an Apple TV's only display is its external `TVOut`.
+///
 /// Built from IDB's display configuration (`Simulator.displays.configuration()`, read in process)
 /// for touch routing, describe-ui and captures, or decoded from devicectl for `axe posture`, which
 /// also prints the backlight and the device orientation.
@@ -197,13 +200,27 @@ struct SimulatorDisplayState: Equatable {
     let jsonVersion: Int?
 
     init(displays: [SimulatorDisplay], deviceOrientation: String? = nil, jsonVersion: Int? = supportedJSONVersion) {
-        self.displays = displays.filter(\.isIntegrated)
+        self.displays = Self.interactionDisplays(displays)
         self.deviceOrientation = deviceOrientation
         self.jsonVersion = jsonVersion
     }
 
+    /// The integrated displays; without any, the sole primary display (an Apple TV's external
+    /// TVOut), as IDB targets it; otherwise none.
+    static func interactionDisplays(_ displays: [SimulatorDisplay]) -> [SimulatorDisplay] {
+        let integrated = displays.filter(\.isIntegrated)
+        guard integrated.isEmpty else { return integrated }
+        let primary = displays.filter(\.primary)
+        return primary.count == 1 ? primary : []
+    }
+
     var isMultiDisplay: Bool {
         displays.count > 1
+    }
+
+    /// The unique IDs of the kept displays that have one; the displays whose devicectl ID AXe reads.
+    var identifiedUniqueIDs: Set<String> {
+        Set(displays.map(\.uniqueId).filter { !$0.isEmpty })
     }
 
     /// The display currently showing UI.
@@ -233,7 +250,8 @@ struct SimulatorDisplayState: Equatable {
         return displays.first(where: { !$0.primary })
     }
 
-    /// The integrated displays of IDB's display configuration.
+    /// The integrated displays of IDB's display configuration; without any, its sole primary
+    /// display (an Apple TV's external TVOut), as `interactionDisplays` keeps it.
     ///
     /// IDB reads the same CoreDevice report as devicectl but does not expose devicectl's numeric
     /// display IDs (1 cover, 3 inner), so they come from `displayIDs`, keyed by unique ID; a display
@@ -243,8 +261,8 @@ struct SimulatorDisplayState: Equatable {
     /// A runtime that does not identify its displays reports no displays and only the geometry of
     /// its sole integrated display (`.unidentified`); that display is kept, without IDs or a name.
     init(configuration: FBSimulatorControl.SimulatorDisplayConfiguration, displayIDs: [String: Int]) {
-        let displays = configuration.displays.filter(\.isIntegrated).map { display in
-            let size = SimulatorDisplay.Size(width: Double(display.bounds.width), height: Double(display.bounds.height))
+        // `init(displays:)` keeps the integrated displays, or a sole primary external one.
+        let displays = configuration.displays.map { display in
             let active: Bool?
             switch display.activity {
             case .active:
@@ -256,17 +274,16 @@ struct SimulatorDisplayState: Equatable {
             @unknown default:
                 active = nil
             }
-            return SimulatorDisplay(
-                displayId: displayIDs[display.uniqueID] ?? SimulatorDisplay.unknownDisplayID,
+            return Self.idbDisplay(
+                uniqueID: display.uniqueID,
                 name: display.name,
-                uniqueId: display.uniqueID,
-                primary: display.isPrimary,
                 active: active,
-                backlightState: nil,
-                currentOrientation: display.rotation.rawValue,
-                nativeSize: size,
-                pointScale: display.scale,
-                bounds: size
+                isPrimary: display.isPrimary,
+                isIntegrated: display.isIntegrated,
+                pixelSize: SimulatorDisplay.Size(width: Double(display.bounds.width), height: Double(display.bounds.height)),
+                scale: display.scale,
+                rotation: display.rotation.rawValue,
+                displayIDs: displayIDs
             )
         }
         var unidentified: SimulatorDisplay?
@@ -278,6 +295,34 @@ struct SimulatorDisplayState: Equatable {
             )
         }
         self.init(idbDisplays: displays, unidentifiedDisplay: unidentified)
+    }
+
+    /// One display of IDB's configuration: its pixel bounds as both native size and bounds, its
+    /// devicectl ID from `displayIDs` (keyed by unique ID) or `unknownDisplayID`, no backlight.
+    static func idbDisplay(
+        uniqueID: String,
+        name: String,
+        active: Bool?,
+        isPrimary: Bool,
+        isIntegrated: Bool,
+        pixelSize: SimulatorDisplay.Size,
+        scale: Double,
+        rotation: String,
+        displayIDs: [String: Int]
+    ) -> SimulatorDisplay {
+        SimulatorDisplay(
+            displayId: displayIDs[uniqueID] ?? SimulatorDisplay.unknownDisplayID,
+            name: name,
+            uniqueId: uniqueID,
+            primary: isPrimary,
+            active: active,
+            backlightState: nil,
+            currentOrientation: rotation,
+            nativeSize: pixelSize,
+            pointScale: scale,
+            bounds: pixelSize,
+            isIntegrated: isIntegrated
+        )
     }
 
     /// The displays IDB identified, or the sole unidentified display when it identified none.
@@ -753,7 +798,8 @@ enum SimulatorDisplays {
         lookUpDisplayIDs: Bool = true
     ) async throws -> SimulatorDisplayState {
         let configuration = try await settledConfiguration(of: simulator, within: settleBudget, logger: logger)
-        let needed = Set(configuration.displays.filter(\.isIntegrated).map(\.uniqueID))
+        // IDs for the displays AXe keeps: the integrated ones, or an Apple TV's sole primary TVOut.
+        let needed = SimulatorDisplayState(configuration: configuration, displayIDs: [:]).identifiedUniqueIDs
         let ids = lookUpDisplayIDs
             ? await displayIDs(needed: needed, simulatorUDID: simulator.udid, logger: logger)
             : DisplayIDCache.ids(forSimulatorUDID: simulator.udid) ?? [:]

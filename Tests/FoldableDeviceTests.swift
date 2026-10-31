@@ -643,6 +643,45 @@ struct PostureTests {
         #expect(encoded["hingeAngle"] is NSNull)
     }
 
+    @Test("Apple TV: the external TVOut is the active display, sized from its bounds")
+    func appleTVOut() throws {
+        let state = try devicectlFixture("tv-tvout")
+        #expect(state.displays.map(\.name) == ["TVOut"])
+        let posture = DevicePosture(udid: "SIMULATOR_UDID", hingeAngle: nil, state: state)
+        let active = try #require(posture.activeDisplay)
+
+        #expect(posture.displays.count == 1)
+        #expect(active.name == "TVOut")
+        #expect(active.role == .external)
+        #expect(active.primary)
+        #expect(active.active)
+        #expect(active.sizePoints == DevicePosture.Size(width: 1920, height: 1080))
+        #expect(posture.activePanel == nil)
+        #expect(posture.textSummary.contains("active display: TVOut (id 1, external, primary), rot0 portrait, 1920x1080 pt, backlight unknown"))
+        #expect(posture.textSummary.contains("  TVOut (id 1, external, primary), rot0 portrait, 1920x1080 pt, backlight unknown (active)"))
+
+        let encoded = try jsonObject(Data(try posture.jsonString().utf8))
+        let encodedActive = try #require(encoded["activeDisplay"] as? NSDictionary)
+        #expect(encodedActive["role"] as? String == "external")
+        #expect(encodedActive["active"] as? Bool == true)
+    }
+
+    @Test("External displays are kept only without an integrated display, and only a sole primary one")
+    func externalDisplaySelection() {
+        func display(_ name: String, primary: Bool, integrated: Bool) -> AXe.SimulatorDisplay {
+            AXe.SimulatorDisplay(
+                displayId: 1, name: name, uniqueId: name, primary: primary, active: nil, backlightState: nil,
+                currentOrientation: "rot0", nativeSize: nil, pointScale: 1, isIntegrated: integrated
+            )
+        }
+        let lcd = display("LCD", primary: true, integrated: true)
+        let tvOut = display("TVOut", primary: true, integrated: false)
+        #expect(SimulatorDisplayState(displays: [lcd, tvOut]).displays.map(\.name) == ["LCD"])
+        #expect(SimulatorDisplayState(displays: [tvOut]).displays.map(\.name) == ["TVOut"])
+        #expect(SimulatorDisplayState(displays: [display("TVOut", primary: false, integrated: false)]).displays.isEmpty)
+        #expect(SimulatorDisplayState(displays: [tvOut, display("Other", primary: true, integrated: false)]).displays.isEmpty)
+    }
+
     @Test("Without devicectl the backlight and device orientation read unknown; the JSON keeps nulls")
     func devicectlUnavailable() throws {
         let idbOnly = SimulatorDisplayState(displays: try devicectlFixture("duo-folded").displays.map { display in

@@ -3,12 +3,15 @@ import Foundation
 import FBControlCore
 import FBSimulatorControl
 
-enum ButtonType: String, CaseIterable, ExpressibleByArgument {
+enum ButtonType: String, CaseIterable, ExpressibleByArgument, Sendable {
     case applePay = "apple-pay"
     case home = "home"
     case lock = "lock"
     case sideButton = "side-button"
     case siri = "siri"
+    case playPause = "play-pause"
+    case volumeUp = "volume-up"
+    case volumeDown = "volume-down"
 
     /// Gap between the two side-button presses that make up an Apple Pay press over DTUHID.
     static let applePayPressGap: TimeInterval = 0.15
@@ -25,6 +28,12 @@ enum ButtonType: String, CaseIterable, ExpressibleByArgument {
             return .sideButton
         case .siri:
             return .siri
+        case .playPause:
+            return .playPause
+        case .volumeUp:
+            return .volumeUp
+        case .volumeDown:
+            return .volumeDown
         }
     }
 
@@ -40,7 +49,60 @@ enum ButtonType: String, CaseIterable, ExpressibleByArgument {
             return "Side button"
         case .siri:
             return "Siri button"
+        case .playPause:
+            return "Play/Pause button"
+        case .volumeUp:
+            return "Volume Up button"
+        case .volumeDown:
+            return "Volume Down button"
         }
+    }
+
+    /// The buttons a platform's simulator accepts, in help order. watchOS `home` is the Digital
+    /// Crown press. tvOS takes the Siri Remote's consumer buttons; its d-pad, select and menu are
+    /// `axe remote`. visionOS takes none (see `PlatformSupport.visionOSInputUnsupportedMessage`).
+    static func supported(on platform: SimulatorPlatform) -> [ButtonType] {
+        switch platform {
+        case .iOS, .unknown:
+            return [.applePay, .home, .lock, .sideButton, .siri]
+        case .watchOS:
+            return [.home, .sideButton, .lock, .siri]
+        case .tvOS:
+            return [.playPause, .volumeUp, .volumeDown]
+        case .visionOS:
+            return []
+        }
+    }
+
+    /// Throws a validation error naming the platform and its buttons when `platform` has no such
+    /// button, and the visionOS input error on visionOS.
+    func validate(for platform: SimulatorPlatform) throws {
+        try PlatformSupport.check(.button, on: platform)
+        let supported = Self.supported(on: platform)
+        guard supported.contains(self) else {
+            let names = supported.map(\.rawValue).joined(separator: ", ")
+            var message = platform == .unknown
+                ? "Button '\(rawValue)' is not available on this simulator, which runs an unrecognised platform (treated as iOS). Valid buttons: \(names)."
+                : "Button '\(rawValue)' is not available on \(platform.displayName) simulators. Valid buttons on \(platform.displayName): \(names)."
+            if platform == .tvOS {
+                message += " Use `axe remote up|down|left|right|select|menu` for the Siri Remote d-pad, select and menu."
+            }
+            // A CLIError, not a ValidationError: thrown from run(), ArgumentParser would follow a
+            // ValidationError with the root command's usage line, which says nothing about buttons.
+            throw CLIError(errorDescription: message)
+        }
+    }
+
+    /// Validates against the platform of the simulator with `simulatorUDID`, as `lookup` reports
+    /// it (`nil` = no such simulator). A missing simulator throws `CLIError.simulatorNotFound`
+    /// before any platform refusal.
+    func validate(simulatorUDID: String, lookup: (String) throws -> SimulatorPlatform?) throws {
+        try validate(for: PlatformSupport.resolvePlatform(udid: simulatorUDID, lookup: lookup))
+    }
+
+    @MainActor
+    func validate(simulatorUDID: String, logger: AxeLogger) throws {
+        try validate(for: SimulatorSession.requirePlatform(udid: simulatorUDID, logger: logger))
     }
 
     /// The HID event for one press, held for `duration` seconds when given.
@@ -96,12 +158,19 @@ struct Button: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         abstract: "Press a hardware button on the simulator.",
         discussion: """
-        Available buttons: apple-pay, home, lock, side-button, siri
+        Available buttons by platform (`axe list-simulators` shows each simulator's platform):
+          iOS/iPadOS: apple-pay, home, lock, side-button, siri
+          watchOS:    home (Digital Crown press), side-button, lock, siri
+          tvOS:       play-pause, volume-up, volume-down
+                      (Siri Remote d-pad, select and menu: `axe remote`)
+          visionOS:   not supported
+        A button the simulator's platform does not have is refused before anything is sent.
 
         Examples:
           axe button home --udid SIMULATOR_UDID
           axe button lock --duration 2.0 --udid SIMULATOR_UDID
           axe button siri --udid SIMULATOR_UDID
+          axe button play-pause --udid SIMULATOR_UDID
         """
     )
 
@@ -131,6 +200,8 @@ struct Button: AsyncParsableCommand {
         try await setup(logger: logger)
 
         try await performGlobalSetup(logger: logger)
+
+        try await buttonType.validate(simulatorUDID: simulatorUDID, logger: logger)
 
         logger.info().log("Pressing \(buttonType.description)")
         if let duration = duration {

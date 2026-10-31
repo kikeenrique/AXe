@@ -101,6 +101,7 @@ struct Tap: AsyncParsableCommand {
         try await setup(logger: logger)
 
         try await performGlobalSetup(logger: logger)
+        try await PlatformSupport.check(.touch, simulatorUDID: simulatorUDID, logger: logger)
 
         let resolution: TapResolution
         let resolvedDescription: String

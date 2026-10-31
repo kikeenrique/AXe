@@ -213,6 +213,8 @@ enum DisplayRole: String, Encodable, Equatable {
     case cover
     case inner
     case main
+    /// A non-integrated display that is the device's only display: an Apple TV's `TVOut`.
+    case external
 }
 
 /// Hinge angle and display state of a simulator, printed by `axe posture`, `axe hinge` and `axe rotate`.
@@ -282,13 +284,25 @@ struct DevicePosture: Encodable, Equatable {
             return .cover
         case .inner:
             return .inner
-        case .main, nil:
+        case .main, .external, nil:
             return nil
         }
     }
 
+    /// The interface size in points: the native size turned by the display's rotation.
+    ///
+    /// devicectl reports an Apple TV's TVOut with a 0x0 native size; an external display, or one
+    /// reported that way, is sized from its bounds instead, divided by its point scale when one is
+    /// reported. An integrated display without a usable native size and point scale has no size:
+    /// its bounds are pixels in the native orientation and say nothing about the interface.
     static func interfaceSize(of display: SimulatorDisplay) -> Size? {
-        guard let native = display.nativeSizePoints else { return nil }
+        guard let native = display.nativeSizePoints, native.width > 0, native.height > 0 else {
+            let zeroNativeSize = display.nativeSize.map { $0.width == 0 && $0.height == 0 } ?? false
+            guard !display.isIntegrated || zeroNativeSize,
+                  let bounds = display.bounds, bounds.width > 0, bounds.height > 0 else { return nil }
+            let scale = display.pointScale.flatMap { $0 > 0 ? $0 : nil } ?? 1
+            return Size(width: bounds.width / scale, height: bounds.height / scale)
+        }
         switch display.currentRotation {
         case .rot90, .rot270:
             return Size(width: native.height, height: native.width)
@@ -298,7 +312,12 @@ struct DevicePosture: Encodable, Equatable {
     }
 
     private static func makeDisplay(_ display: SimulatorDisplay, isMultiDisplay: Bool, isActive: Bool) -> Display {
-        let role: DisplayRole = isMultiDisplay ? (display.primary ? .cover : .inner) : .main
+        let role: DisplayRole
+        if !display.isIntegrated {
+            role = .external
+        } else {
+            role = isMultiDisplay ? (display.primary ? .cover : .inner) : .main
+        }
         return Display(
             id: display.displayId,
             name: display.name,
@@ -584,6 +603,8 @@ enum FoldableDevice {
     /// Runs `action`. Returns a warning when the device took the change but the interface did not follow.
     @discardableResult
     static func perform(_ action: DeviceStateAction, simulator: Simulator, logger: AxeLogger) async throws -> String? {
+        // watchOS, tvOS and visionOS report no orientation or hinge; refuse before Device Hub.
+        try PlatformSupport.requireIOS(command: action.isHingeAction ? "hinge" : "rotate", on: simulator.platform)
         defer { SimulatorDisplays.invalidateCachedState() }
         let capabilities = try await simulator.capabilities()
         if action.isHingeAction {

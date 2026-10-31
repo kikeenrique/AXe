@@ -40,6 +40,11 @@ struct DescribedElement: AccessibilityFrameTree {
         hasText("AXLabel") || hasText("AXValue")
     }
 
+    /// True when the element reports `focused: true`.
+    var isFocused: Bool {
+        (json["focused"] as? NSNumber)?.boolValue == true
+    }
+
     private func hasText(_ key: String) -> Bool {
         guard let text = json[key] as? String else { return false }
         return !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -142,6 +147,42 @@ enum DescribeUIOutput {
         let roots = try target.activePanelRoots(tree.roots, consequence: consequence)
         let element = try element(at: point, in: roots, target: target)
         return try serialize(element.json)
+    }
+
+    static let noFocusedElementMessage = "No focused element: no element in the accessibility tree reports `focused: true`. Run `axe describe-ui` to see the whole tree."
+
+    /// The focused element of a describe-ui tree as a single element object, without its children
+    /// (a focused tvOS cell carries decoration groups and images that say nothing about it).
+    ///
+    /// The element whose `focused` is true; when an element and its descendants are all focused (a
+    /// focused cell inside a focused collection), the deepest one, and the first in tree order among
+    /// equally deep ones.
+    ///
+    /// - Throws: `noFocusedElementMessage` when no element is focused.
+    static func focusedElementData(in data: Data) throws -> Data {
+        let tree = try DescribedTree(data: data)
+        guard let element = focusedElement(in: tree.roots) else {
+            throw CLIError(errorDescription: noFocusedElementMessage)
+        }
+        var json = element.json
+        json.removeValue(forKey: "children")
+        return try serialize(json)
+    }
+
+    static func focusedElement(in roots: [DescribedElement]) -> DescribedElement? {
+        var best: (element: DescribedElement, depth: Int)?
+        func visit(_ element: DescribedElement, depth: Int) {
+            if element.isFocused, best.map({ depth > $0.depth }) ?? true {
+                best = (element, depth)
+            }
+            for child in element.children ?? [] {
+                visit(child, depth: depth + 1)
+            }
+        }
+        for root in roots {
+            visit(root, depth: 0)
+        }
+        return best?.element
     }
 
     /// Hit-tests interface-space roots.

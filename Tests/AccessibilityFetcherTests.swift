@@ -1,6 +1,7 @@
 import Foundation
 import FBControlCore
 import enum FBSimulatorAX.AccessibilityError
+import enum FBSimulatorAX.AXKeys
 import Testing
 @testable import AXe
 
@@ -49,6 +50,7 @@ struct AccessibilityFetcherTests {
             .contentRequired,
             .pid,
             .traits,
+            .focused,
         ])
     }
 
@@ -565,5 +567,11 @@ struct AccessibilityFetcherTests {
     @Test("describe-ui requests traits")
     func requestsTraits() {
         #expect(AccessibilityFetcher.accessibilityOutputKeys.contains(.traits))
+    }
+
+    @Test("describe-ui requests focus, printed under the `focused` key")
+    func requestsFocused() {
+        #expect(AccessibilityFetcher.accessibilityOutputKeys.contains(.focused))
+        #expect(AXKeys.focused.rawValue == "focused")
     }
 }

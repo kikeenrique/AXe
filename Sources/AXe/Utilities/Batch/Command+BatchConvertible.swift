@@ -39,6 +39,7 @@ private func resolveBatchTapPoint(
         pollInterval: context.pollInterval,
         elementType: elementType,
         target: target,
+        platform: SimulatorSession.platform(udid: context.simulatorUDID, logger: logger),
         logger: logger
     ) {
         let forceRefresh = !isFirstFetch
@@ -79,6 +80,7 @@ extension Tap: BatchConvertible {
     }
 
     func toBatchPrimitives(context: BatchContext, logger: AxeLogger) async throws -> [BatchPrimitive] {
+        try PlatformSupport.check(.touch, simulatorUDID: context.simulatorUDID, logger: logger)
         let resolution: TapResolution
         let resolvedRoots: [AccessibilityElement]?
 
@@ -138,6 +140,7 @@ extension Tap: BatchConvertible {
 
 extension Swipe: BatchConvertible {
     func toBatchPrimitives(context: BatchContext, logger: AxeLogger) async throws -> [BatchPrimitive] {
+        try PlatformSupport.check(.touch, simulatorUDID: context.simulatorUDID, logger: logger)
         let swipeDuration = duration ?? 1.0
         let swipeDelta = delta ?? 50.0
         let physicalPoints = try await OrientationAwareCoordinates.translateBatch(
@@ -162,8 +165,10 @@ extension Swipe: BatchConvertible {
 
 extension Gesture: BatchConvertible {
     func toBatchPrimitives(context: BatchContext, logger: AxeLogger) async throws -> [BatchPrimitive] {
+        let platform = try PlatformSupport.check(.touch, simulatorUDID: context.simulatorUDID, logger: logger)
         let target = try await TouchTarget.nonMainTarget(forSimulatorUDID: context.simulatorUDID, logger: logger)
-        let coords = try coordinates(target: target)
+        let mainScreen = mainScreenSize(platform: platform, simulatorUDID: context.simulatorUDID, logger: logger)
+        let coords = try coordinates(target: target, mainScreen: mainScreen)
         let gestureDuration = duration ?? preset.defaultDuration
         let gestureDelta = delta ?? preset.defaultDelta
 
@@ -182,6 +187,7 @@ extension Gesture: BatchConvertible {
 
 extension Touch: BatchConvertible {
     func toBatchPrimitives(context: BatchContext, logger: AxeLogger) async throws -> [BatchPrimitive] {
+        try PlatformSupport.check(.touch, simulatorUDID: context.simulatorUDID, logger: logger)
         let physicalPoint = try await OrientationAwareCoordinates.translate(
             point: (x: pointX, y: pointY),
             for: context.simulatorUDID,
@@ -210,12 +216,28 @@ extension Touch: BatchConvertible {
 
 extension Button: BatchConvertible {
     func toBatchPrimitives(context: BatchContext, logger: AxeLogger) async throws -> [BatchPrimitive] {
-        [.buttonPress(buttonType, duration: duration)]
+        try buttonType.validate(simulatorUDID: context.simulatorUDID, logger: logger)
+        return [.buttonPress(buttonType, duration: duration)]
+    }
+}
+
+extension Remote: BatchConvertible {
+    func toBatchPrimitives(context: BatchContext, logger: AxeLogger) async throws -> [BatchPrimitive] {
+        try PlatformSupport.check(.remote, simulatorUDID: context.simulatorUDID, logger: logger)
+        return [.hidMergeable(event)]
+    }
+}
+
+extension Crown: BatchConvertible {
+    func toBatchPrimitives(context: BatchContext, logger: AxeLogger) async throws -> [BatchPrimitive] {
+        try PlatformSupport.check(.crown, simulatorUDID: context.simulatorUDID, logger: logger)
+        return [.crownRotation(rotation)]
     }
 }
 
 extension Key: BatchConvertible {
     func toBatchPrimitives(context: BatchContext, logger: AxeLogger) async throws -> [BatchPrimitive] {
+        try PlatformSupport.check(.keyboard, simulatorUDID: context.simulatorUDID, logger: logger)
         if let duration {
             let composite = SimulatorHIDEvent.composite([
                 .keyboard(direction: .down, keyCode: UInt32(keycode)),
@@ -231,6 +253,7 @@ extension Key: BatchConvertible {
 
 extension KeySequence: BatchConvertible {
     func toBatchPrimitives(context: BatchContext, logger: AxeLogger) async throws -> [BatchPrimitive] {
+        try PlatformSupport.check(.keyboard, simulatorUDID: context.simulatorUDID, logger: logger)
         let parsedKeycodes = try parseCommaSeparatedIntsStrict(keycodesString, fieldName: "keycodes")
         let keyDelay = delay ?? 0.1
         var events: [SimulatorHIDEvent] = []
@@ -248,6 +271,7 @@ extension KeySequence: BatchConvertible {
 
 extension KeyCombo: BatchConvertible {
     func toBatchPrimitives(context: BatchContext, logger: AxeLogger) async throws -> [BatchPrimitive] {
+        try PlatformSupport.check(.keyboard, simulatorUDID: context.simulatorUDID, logger: logger)
         let parsedModifiers = try parseCommaSeparatedIntsStrict(modifiersString, fieldName: "modifier keycodes")
 
         var events: [SimulatorHIDEvent] = []
@@ -265,6 +289,7 @@ extension KeyCombo: BatchConvertible {
 
 extension Type: BatchConvertible {
     func toBatchPrimitives(context: BatchContext, logger: AxeLogger) async throws -> [BatchPrimitive] {
+        try PlatformSupport.check(.keyboard, simulatorUDID: context.simulatorUDID, logger: logger)
         let inputText: String
         switch (text, useStdin, inputFile) {
         case (let positionalText?, false, nil):

@@ -4,7 +4,7 @@ description: Provides agent-ready AXe CLI usage guidance for iOS Simulator autom
 ---
 
 ## Step 1: Confirm runtime context
-1. Identify simulator UDID target first (`axe list-simulators`).
+1. Identify simulator UDID target first (`axe list-simulators`). Each line ends with `Platform '<iOS|watchOS|tvOS|visionOS|unknown>'`; AXe is built for iOS (iPad reports `iOS`). On watchOS `describe-ui`, selector taps (`tap --label`), coordinate taps, `swipe` and `button home|side-button|lock|siri` work; scroll with the Digital Crown: `axe crown --delta 50` (down) and `axe crown --delta=-50` (up). On tvOS touch commands are refused; use `axe remote up|down|left|right|select|menu|play-pause` and `button play-pause|volume-up|volume-down`; `describe-ui` works and marks the focused element `focused: true`, `describe-ui --focused` prints only it (check it after each `remote` move), and `type`/`key-sequence` type straight into the focused text field. On visionOS every input command is refused (the bundled IDB has no visionOS input); screenshot, video and `posture` work. `rotate` and `hinge` are iOS only, `crown` watchOS only, `remote` tvOS only. Do not retry these refusals.
 2. Simulator-interaction AXe commands require `--udid <UDID>`. Commands like `list-simulators` and `init` do not.
 3. Run `axe describe-ui --udid <UDID>` to inspect the full current screen. Use `axe describe-ui --point <X,Y> --udid <UDID>` to inspect the element at a specific coordinate. Use the output to discover available `--id` and `--label` values for selector taps and slider setting, and to confirm coordinates for coordinate-based taps.
    On a foldable simulator (iPhone Duo) run `axe posture --udid <UDID>` first. While the inner display is active, `describe-ui` reports only that display's windows with frames in its interface points (the same space as `-x/-y` and `axe screenshot` pixels / 3), and `--point <X,Y>` takes interface points of that display. `describe-ui --all-displays` prints the active display's tree as the simulator reports it (SpringBoard frames in native portrait points, not touch coordinates); use it only for debugging. A stderr warning "could not determine the active display" means the output is that raw tree. On the folded cover, home-screen frames can differ from the visible layout, so confirm targets with a screenshot.
@@ -12,7 +12,7 @@ description: Provides agent-ready AXe CLI usage guidance for iOS Simulator autom
 
 ## Step 2: Choose the right command
 
-Available commands: `init`, `tap`, `slider`, `swipe`, `drag`, `gesture`, `touch`, `type`, `button`, `key`, `key-sequence`, `key-combo`, `batch`, `describe-ui`, `screenshot`, `record-video`, `stream-video`, `hinge`, `posture`, `rotate`, `list-simulators`. Run `axe --help` or `axe <command> --help` for full options.
+Available commands: `init`, `tap`, `slider`, `swipe`, `drag`, `gesture`, `touch`, `type`, `button`, `key`, `key-sequence`, `key-combo`, `remote` (tvOS), `crown` (watchOS), `batch`, `describe-ui`, `screenshot`, `record-video`, `stream-video`, `hinge`, `posture`, `rotate`, `list-simulators`. Run `axe --help` or `axe <command> --help` for full options.
 
 Common examples:
 ```bash
@@ -33,6 +33,9 @@ axe hinge close --udid <UDID>
 axe hinge open --udid <UDID>
 axe posture --json --udid <UDID>
 axe rotate portrait --udid <UDID>
+axe remote down --count 2 --udid <UDID>      # tvOS only
+axe describe-ui --focused --udid <UDID>      # the focused element (tvOS focus)
+axe crown --delta 50 --udid <UDID>           # watchOS only; --delta=-50 scrolls back
 ```
 
 ## Step 3: Understand the execution model
@@ -45,7 +48,7 @@ Most HID commands (`tap`, `swipe`, `drag`, `type`, `key`, etc.) are fire-and-for
 ## Step 4: Apply timing and input best practices
 - Use `--pre-delay` / `--post-delay` on tap, swipe, and gesture commands for fixed delays around actions.
 - Use `--duration` to control how long a swipe, gesture, button press, or key press lasts.
-- Coordinate-based `tap`, `swipe`, `drag`, and `touch` accept coordinates from `describe-ui` directly; AXe detects rotated landscape simulator orientation and letterboxed landscape-only app layouts automatically.
+- Coordinate-based `tap`, `swipe`, `drag`, and `touch` accept coordinates from `describe-ui` directly; AXe detects rotated landscape simulator orientation and letterboxed landscape-only app layouts automatically on iOS; on watchOS coordinates are sent unchanged.
 - Foldable simulators (iPhone Duo): `screenshot` and `record-video` capture the active display (`--display auto`, the default); pass `--display cover|inner|<id>|<name>` to choose. There `record-video` uses simctl at native size and rejects `--fps`, `--quality` and `--scale` other than 1.0. `stream-video` streams the active display (the cover folded, the inner display unfolded); a `--display` naming the inactive display fails. Touch commands follow the active display, folded or unfolded. Coordinates are interface points of the active display as `axe screenshot` shows it (pixels / 3; the unfolded inner display in landscape is 951x669). A point outside the active display fails without sending anything. Touches fail with an error only when the active display cannot be determined, or when the inner display is active on the legacy Indigo input transport; do not retry those errors unchanged. `AXE_DISPLAY_PROBE=never` skips AXe's display handling (out-of-display refusal, active-display filtering of `describe-ui`, selector taps, `slider` and `gesture` presets); raw `-x/-y` touches still go to the active display, but selector taps can land in the wrong place while the inner display is active, and AXe prints a one-time warning. Do not set it on a foldable.
 - Fold with `axe hinge close|open|half|set <degrees>`. On iOS 27.2 and later runtimes the angle is set directly (`--duration` animates it); older runtimes always sweep. The command waits for the expected display (cover at 30 degrees or less, inner at 120 or more) to become active and lit, and fails if it does not switch; between those angles either display can be active. Always run `axe posture` after a fold before touching or capturing, and remember `screenshot` captures the active display. If the display stops following the hinge, the simulator must be shut down and booted again.
 - `axe rotate portrait|landscape|portrait-upside-down|landscape-flipped` rotates the active display's interface and verifies it; when the foreground app or screen does not rotate it prints a warning instead of "Rotated to".
@@ -78,6 +81,8 @@ Key rules:
 - Steps run in order; default is fail-fast.
 - Add `--continue-on-error` for best-effort execution.
 - Do not pass `--udid` inside step lines; keep it at batch level.
+- On tvOS use `remote <action> [--count N] [--delay ms]` steps; touch steps are refused there. On watchOS use `crown --delta <d>` steps to scroll.
+- Before any step runs, batch parses every step and checks it against the simulator's platform; a malformed step (`crown --steps 0`) or a refused one (a `tap` on tvOS, `crown` off watchOS, `rotate` off iOS) fails the batch with nothing sent. With `--continue-on-error` it fails at its turn instead.
 - `hinge <set <degrees>|open|close|half>` and `rotate <orientation>` steps are barriers; later steps re-read display and accessibility state, so touch steps after a fold or rotation go to the newly active display.
 
 ## Step 6: Verify outcomes

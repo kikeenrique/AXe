@@ -69,6 +69,7 @@ struct Slider: AsyncParsableCommand {
         let logger = AxeLogger()
         try await setup(logger: logger)
         try await performGlobalSetup(logger: logger)
+        try await PlatformSupport.check(.touch, simulatorUDID: simulatorUDID, logger: logger)
 
         let query = try accessibilityQuery()
         let targetNormalized = value / 100.0

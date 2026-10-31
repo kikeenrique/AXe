@@ -12,11 +12,15 @@ Use this reference when generating or reviewing `axe batch` commands.
 - `key`
 - `key-sequence`
 - `key-combo`
+- `remote <up|down|left|right|select|menu|play-pause> [--count N] [--delay ms]` (tvOS simulators)
+- `crown --delta <d> [--steps N] [--interval-ms M]` (watchOS simulators; negative as `--delta=-50`)
 - `sleep <seconds>` (batch pseudo-step)
 - `hinge <set <degrees>|open|close|half> [--duration <s>] [--no-wait]` (foldable simulators)
 - `rotate <portrait|landscape|portrait-upside-down|landscape-flipped>`
 
-`hinge` and `rotate` are barrier steps: earlier steps finish first, and later steps re-read display state and the accessibility tree (the cached snapshot from `--ax-cache perBatch` is dropped). `hinge sweep`, `hinge get` and `--json` are not available as steps.
+`hinge` and `rotate` are barrier steps: earlier steps finish first, and later steps re-read display state and the accessibility tree (the cached snapshot from `--ax-cache perBatch` is dropped). `hinge sweep`, `hinge get` and `--json` are not available as steps. `crown` steps run as barriers too: earlier steps finish first, the rotation has been taken when the next step starts, and the `--ax-cache perBatch` snapshot is dropped, so a later selector tap sees the scrolled content. Touch steps (`tap`, `swipe`, `gesture`) keep the snapshot; use `--ax-cache perStep` when they change the UI before a selector tap.
+
+Before any step runs, batch parses every step's arguments with its command's parser and checks the step against the simulator's platform with the rules of its command: touch steps are refused on tvOS, `remote` off tvOS, `crown` off watchOS, `rotate` and `hinge` off iOS, and `button` takes the platform's buttons. A malformed step (unknown step name, unterminated quote, an option out of range such as `crown --steps 0`) or a refused one fails the whole batch with `Step N failed: [name]` and nothing sent, so earlier steps are not left applied. Errors that depend on the screen (an element not found) still fail at the step's turn. With `--continue-on-error` this check is skipped and such a step fails when its turn comes.
 
 ## Batch flags
 - `--udid <UDID>`: required simulator target.

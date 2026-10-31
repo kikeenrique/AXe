@@ -51,6 +51,25 @@ enum SimulatorSession {
         return simulator
     }
 
+    /// The platform of the simulator with `udid`; throws `CLIError.simulatorNotFound` when there is
+    /// no such simulator. Use this before refusing a command for its platform.
+    static func requirePlatform(udid: String, logger: AxeLogger) throws -> SimulatorPlatform {
+        try PlatformSupport.resolvePlatform(udid: udid) {
+            try simulator(udid: $0, logger: logger)?.platform
+        }
+    }
+
+    /// The platform of the simulator with `udid`, from the cached `Simulator`'s configuration.
+    /// `.unknown` when the simulator cannot be looked up, so coordinate and accessibility paths
+    /// keep their iOS behaviour and report the lookup failure themselves. Never refuse a command
+    /// on this value; use `requirePlatform(udid:logger:)` for that.
+    static func platform(udid: String, logger: AxeLogger) -> SimulatorPlatform {
+        guard let simulator = (try? simulator(udid: udid, logger: logger)) ?? nil else {
+            return .unknown
+        }
+        return simulator.platform
+    }
+
     /// The simulator with `udid`; throws `CLIError.simulatorNotFound` when it does not exist.
     static func requireSimulator(udid: String, logger: AxeLogger) throws -> Simulator {
         guard let simulator = try simulator(udid: udid, logger: logger) else {

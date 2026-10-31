@@ -65,6 +65,7 @@ struct KeyCombo: AsyncParsableCommand {
         try await setup(logger: logger)
 
         try await performGlobalSetup(logger: logger)
+        try await PlatformSupport.check(.keyboard, simulatorUDID: simulatorUDID, logger: logger)
 
         let parsedModifiers = try parseCommaSeparatedIntsStrict(modifiersString, fieldName: "modifier keycodes")
 

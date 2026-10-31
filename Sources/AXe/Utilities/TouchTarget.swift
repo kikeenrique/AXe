@@ -296,12 +296,18 @@ struct TouchTarget: Equatable {
     /// unfiltered tree.
     @MainActor
     static func nonMainTarget(forSimulatorUDID simulatorUDID: String, logger: AxeLogger) async throws -> TouchTarget? {
+        // Only foldable iOS simulators have a non-main display; skip the display read elsewhere
+        // (it matters with AXE_DISPLAY_PROBE=always).
+        guard SimulatorSession.platform(udid: simulatorUDID, logger: logger).usesPhoneCoordinateModel else {
+            return nil
+        }
         SimulatorDisplays.warnIfProbeDisabled(simulatorUDID: simulatorUDID, logger: logger)
         return try nonMainTarget(state: await SimulatorDisplays.state(forSimulatorUDID: simulatorUDID, logger: logger))
     }
 
     @MainActor
     static func nonMainTarget(for simulator: Simulator, logger: AxeLogger) async throws -> TouchTarget? {
+        guard simulator.platform.usesPhoneCoordinateModel else { return nil }
         SimulatorDisplays.warnIfProbeDisabled(simulatorUDID: simulator.udid, logger: logger)
         return try nonMainTarget(state: await SimulatorDisplays.state(for: simulator, logger: logger))
     }

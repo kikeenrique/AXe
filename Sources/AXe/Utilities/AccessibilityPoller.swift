@@ -20,6 +20,7 @@ struct AccessibilityPoller {
             pollInterval: pollInterval,
             elementType: elementType,
             target: target,
+            platform: SimulatorSession.platform(udid: simulatorUDID, logger: logger),
             logger: logger
         ) {
             try await AccessibilityFetcher.fetchAccessibilityElements(for: simulatorUDID, logger: logger)
@@ -42,6 +43,7 @@ struct AccessibilityPoller {
             waitTimeout: waitTimeout,
             pollInterval: pollInterval,
             elementType: elementType,
+            platform: SimulatorSession.platform(udid: simulatorUDID, logger: logger),
             logger: logger,
             resolver: { roots, query, elementType in
                 try AccessibilityTargetResolver.resolveElement(roots: roots, query: query, elementType: elementType, target: target)
@@ -51,12 +53,15 @@ struct AccessibilityPoller {
         }
     }
 
+    /// `platform` turns a final not-found error over a childless tree into
+    /// `ElementResolutionError.emptyTree` on watchOS, tvOS and visionOS.
     static func pollForResolution(
         query: AccessibilityQuery,
         waitTimeout: TimeInterval,
         pollInterval: TimeInterval,
         elementType: String?,
         target: TouchTarget? = nil,
+        platform: SimulatorPlatform = .iOS,
         logger: AxeLogger,
         rootsFetcher: () async throws -> [AccessibilityElement]
     ) async throws -> TapResolution {
@@ -65,6 +70,7 @@ struct AccessibilityPoller {
             waitTimeout: waitTimeout,
             pollInterval: pollInterval,
             elementType: elementType,
+            platform: platform,
             logger: logger,
             resolver: { roots, query, elementType in
                 try AccessibilityTargetResolver.resolveTap(roots: roots, query: query, elementType: elementType, target: target)
@@ -78,11 +84,12 @@ struct AccessibilityPoller {
         waitTimeout: TimeInterval,
         pollInterval: TimeInterval,
         elementType: String?,
+        platform: SimulatorPlatform,
         logger: AxeLogger,
         resolver: ([AccessibilityElement], AccessibilityQuery, String?) throws -> T,
         rootsFetcher: () async throws -> [AccessibilityElement]
     ) async throws -> T {
-        let roots = try await rootsFetcher()
+        var roots = try await rootsFetcher()
         do {
             return try resolver(roots, query, elementType)
         } catch let error as ElementResolutionError where error.isNotFound && waitTimeout > 0 {
@@ -94,16 +101,18 @@ struct AccessibilityPoller {
                 logger.info().log("Element not found, retrying in \(pollInterval)s…")
                 try await Task.sleep(for: .seconds(pollInterval))
 
-                let freshRoots = try await rootsFetcher()
+                roots = try await rootsFetcher()
                 do {
-                    return try resolver(freshRoots, query, elementType)
+                    return try resolver(roots, query, elementType)
                 } catch let retryError as ElementResolutionError where retryError.isNotFound {
                     lastError = retryError
                     continue
                 }
             }
 
-            throw lastError
+            throw AccessibilityTargetResolver.platformAwareError(lastError, roots: roots, platform: platform)
+        } catch let error as ElementResolutionError {
+            throw AccessibilityTargetResolver.platformAwareError(error, roots: roots, platform: platform)
         }
     }
 }

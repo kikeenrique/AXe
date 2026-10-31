@@ -749,3 +749,100 @@ struct DisplayRotationTests {
         #expect(rotation.simulatorOrientation == expected)
     }
 }
+
+@Suite("IDB display configuration")
+struct IDBDisplayConfigurationTests {
+    private static let tvOutID = "00000000-0000-0000-0000-0000000000A1"
+
+    private func tvOut(displayIDs: [String: Int]) -> SimulatorDisplay {
+        SimulatorDisplayState.idbDisplay(
+            uniqueID: Self.tvOutID,
+            name: "TVOut",
+            active: false,
+            isPrimary: true,
+            isIntegrated: false,
+            pixelSize: SimulatorDisplay.Size(width: 3840, height: 2160),
+            scale: 2,
+            rotation: "rot0",
+            displayIDs: displayIDs
+        )
+    }
+
+    @Test("An Apple TV's non-integrated TVOut is kept as the active display, with its devicectl ID and size")
+    func tvOutKept() throws {
+        let state = SimulatorDisplayState(idbDisplays: [tvOut(displayIDs: [Self.tvOutID: 1])], unidentifiedDisplay: nil)
+        let only = try #require(state.displays.first)
+        #expect(state.displays.count == 1)
+        #expect(only.name == "TVOut")
+        #expect(!only.isIntegrated)
+        #expect(only.displayId == 1)
+        #expect(state.activeDisplay?.uniqueId == Self.tvOutID)
+        #expect(state.identifiedUniqueIDs == [Self.tvOutID])
+
+        let posture = DevicePosture(udid: "SIMULATOR_UDID", hingeAngle: nil, state: state)
+        #expect(posture.activeDisplay?.role == .external)
+        #expect(posture.activeDisplay?.sizePoints == DevicePosture.Size(width: 1920, height: 1080))
+    }
+
+    @Test("Without its devicectl ID the TVOut carries unknownDisplayID; a non-primary external display is dropped")
+    func tvOutWithoutID() {
+        let state = SimulatorDisplayState(idbDisplays: [tvOut(displayIDs: [:])], unidentifiedDisplay: nil)
+        #expect(state.displays.map(\.displayId) == [SimulatorDisplay.unknownDisplayID])
+        let secondary = SimulatorDisplayState.idbDisplay(
+            uniqueID: "secondary", name: "External", active: nil, isPrimary: false, isIntegrated: false,
+            pixelSize: SimulatorDisplay.Size(width: 100, height: 100), scale: 1, rotation: "rot0", displayIDs: [:]
+        )
+        #expect(SimulatorDisplayState(idbDisplays: [secondary], unidentifiedDisplay: nil).identifiedUniqueIDs.isEmpty)
+    }
+}
+
+@Suite("Posture interface size")
+struct PostureInterfaceSizeTests {
+    private func display(
+        nativeSize: SimulatorDisplay.Size?,
+        pointScale: Double?,
+        bounds: SimulatorDisplay.Size?,
+        rotation: String = "rot90",
+        integrated: Bool
+    ) -> SimulatorDisplay {
+        SimulatorDisplay(
+            displayId: 1, name: "D", uniqueId: "D", primary: true, active: true, backlightState: nil,
+            currentOrientation: rotation, nativeSize: nativeSize, pointScale: pointScale, bounds: bounds,
+            isIntegrated: integrated
+        )
+    }
+
+    @Test("An integrated display is sized from its native size, turned by the rotation")
+    func integrated() {
+        let size = DevicePosture.interfaceSize(of: display(
+            nativeSize: .init(width: 1206, height: 2622), pointScale: 3, bounds: .init(width: 1206, height: 2622), integrated: true
+        ))
+        #expect(size == DevicePosture.Size(width: 874, height: 402))
+    }
+
+    @Test("An integrated display without a point scale or native size has no size; its pixel bounds are not used")
+    func integratedMissingScale() {
+        #expect(DevicePosture.interfaceSize(of: display(
+            nativeSize: .init(width: 1206, height: 2622), pointScale: nil, bounds: .init(width: 1206, height: 2622), integrated: true
+        )) == nil)
+        #expect(DevicePosture.interfaceSize(of: display(
+            nativeSize: nil, pointScale: 3, bounds: .init(width: 1206, height: 2622), integrated: true
+        )) == nil)
+    }
+
+    @Test("An external display, or one with a 0x0 native size, is sized from its bounds over its point scale")
+    func boundsFallback() {
+        #expect(DevicePosture.interfaceSize(of: display(
+            nativeSize: .init(width: 0, height: 0), pointScale: 1, bounds: .init(width: 1920, height: 1080), rotation: "rot0", integrated: false
+        )) == DevicePosture.Size(width: 1920, height: 1080))
+        #expect(DevicePosture.interfaceSize(of: display(
+            nativeSize: nil, pointScale: 2, bounds: .init(width: 3840, height: 2160), rotation: "rot0", integrated: false
+        )) == DevicePosture.Size(width: 1920, height: 1080))
+        #expect(DevicePosture.interfaceSize(of: display(
+            nativeSize: nil, pointScale: nil, bounds: .init(width: 1920, height: 1080), rotation: "rot0", integrated: false
+        )) == DevicePosture.Size(width: 1920, height: 1080))
+        #expect(DevicePosture.interfaceSize(of: display(
+            nativeSize: .init(width: 0, height: 0), pointScale: 2, bounds: .init(width: 200, height: 100), integrated: true
+        )) == DevicePosture.Size(width: 100, height: 50))
+    }
+}

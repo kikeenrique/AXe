@@ -43,12 +43,14 @@ struct BatchPlanRunner {
             case .buttonPress(let button, let duration):
                 try await flushPending()
                 try await button.perform(duration: duration, in: session, logger: logger)
+            case .crownRotation(let rotation):
+                try await flushPending()
+                // The rotation scrolls the content, so element frames in a cached tree are stale.
+                defer { invalidateCaches(after: primitive) }
+                try await rotation.perform(on: session.simulator, logger: logger)
             case .deviceState(let action):
                 try await flushPending()
-                defer {
-                    SimulatorDisplays.invalidateCachedState()
-                    context?.invalidateAccessibilityCache()
-                }
+                defer { invalidateCaches(after: primitive) }
                 if let warning = try await FoldableDevice.perform(action, simulator: session.simulator, logger: logger) {
                     print("Warning: \(warning)", to: &standardError)
                 }
@@ -56,5 +58,21 @@ struct BatchPlanRunner {
         }
 
         try await flushPending()
+    }
+
+    private func invalidateCaches(after primitive: BatchPrimitive) {
+        Self.invalidateCaches(after: primitive, context: context)
+    }
+
+    /// Drops the cached state that `primitive` makes stale (see `BatchPrimitive.invalidatesDisplayState`
+    /// and `invalidatesAccessibilitySnapshot`). The runner calls it whether or not the primitive
+    /// succeeded, since a failed fold, rotation or crown turn may still have changed the screen.
+    static func invalidateCaches(after primitive: BatchPrimitive, context: BatchContext?) {
+        if primitive.invalidatesDisplayState {
+            SimulatorDisplays.invalidateCachedState()
+        }
+        if primitive.invalidatesAccessibilitySnapshot {
+            context?.invalidateAccessibilityCache()
+        }
     }
 }

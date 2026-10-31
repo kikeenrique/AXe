@@ -68,6 +68,7 @@ struct Drag: AsyncParsableCommand {
         let logger = AxeLogger()
         try await setup(logger: logger)
         try await performGlobalSetup(logger: logger)
+        try await PlatformSupport.check(.touch, simulatorUDID: simulatorUDID, logger: logger)
 
         logger.info().log("Performing low-level drag from (\(startX), \(startY)) to (\(endX), \(endY))")
         logger.info().log("Duration: \(duration)s, steps: \(steps)")

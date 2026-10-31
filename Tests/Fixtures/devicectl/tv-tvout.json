@@ -1,0 +1,46 @@
+{
+  "info" : {
+    "commandType" : "devicectl.device.info.displays",
+    "jsonVersion" : 5,
+    "outcome" : "success",
+    "version" : "651.32"
+  },
+  "result" : {
+    "backlightState" : "activeOn",
+    "displays" : [
+      {
+        "backlightState" : "unknown",
+        "bounds" : [
+          [
+            0,
+            0
+          ],
+          [
+            1920,
+            1080
+          ]
+        ],
+        "currentOrientation" : "rot0",
+        "displayId" : 1,
+        "name" : "TVOut",
+        "nativeOrientation" : "rot0",
+        "nativeSize" : [
+          0,
+          0
+        ],
+        "physicalSize" : [
+          48,
+          27
+        ],
+        "pointScale" : 1,
+        "primary" : true,
+        "type" : {
+          "external" : {
+
+          }
+        },
+        "uniqueId" : "00000000-0000-0000-0000-0000000000a1"
+      }
+    ]
+  }
+}
