@@ -8,6 +8,7 @@ function parseArgs(argv) {
     mode: '',
     requestedRef: '',
     runNumber: '',
+    signing: '',
   };
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -38,6 +39,12 @@ function parseArgs(argv) {
       continue;
     }
 
+    if (arg === '--signing') {
+      args.signing = next ?? '';
+      index += 1;
+      continue;
+    }
+
     if (arg === '--help' || arg === '-h') {
       printHelp();
       process.exit(0);
@@ -46,8 +53,12 @@ function parseArgs(argv) {
     throw new Error(`Unknown argument: ${arg}`);
   }
 
-  if (!args.mode || !args.requestedRef || !args.commitSha || !args.runNumber) {
-    throw new Error('Missing required arguments. Expected --mode, --requested-ref, --commit-sha, and --run-number');
+  if (!args.mode || !args.requestedRef || !args.commitSha || !args.runNumber || !args.signing) {
+    throw new Error('Missing required arguments. Expected --mode, --requested-ref, --commit-sha, --run-number, and --signing');
+  }
+
+  if (args.signing !== 'available' && args.signing !== 'unavailable') {
+    throw new Error(`Invalid --signing value: ${args.signing}. Expected available or unavailable`);
   }
 
   return args;
@@ -57,13 +68,20 @@ function printHelp() {
   console.log(`Resolve AXe release workflow context.
 
 Usage:
-  node scripts/release-context.mjs --mode <mode> --requested-ref <ref> --commit-sha <sha> --run-number <n>
+  node scripts/release-context.mjs --mode <mode> --requested-ref <ref> --commit-sha <sha> --run-number <n> --signing <available|unavailable>
 
 Modes:
   production-shipping
   production-verify
   staging-publish
   staging-validate
+
+Signing:
+  available     Developer ID certificate and notarization secrets are all set
+  unavailable   At least one of them is missing. The build is staged from the build
+                output without notarization: staging-publish publishes an unsigned
+                prerelease, production-shipping an unsigned release, both titled
+                with an "(unsigned)" marker; production-verify uploads unsigned artifacts.
 `);
 }
 
@@ -85,13 +103,16 @@ function refLabel(value) {
   return normalized || 'ref';
 }
 
-function buildStagingContext({ mode, requestedRef, commitSha, runNumber }) {
+function buildStagingContext({ mode, requestedRef, commitSha, runNumber, signing }) {
   const publish = mode === 'staging-publish';
+  const signed = signing === 'available';
+  const notarized = publish && signed;
   const sha = shortSha(commitSha);
   const refName = refLabel(requestedRef);
   const version = `0.0.0-staging.${runNumber}`;
   const releaseTag = publish ? `staging-${refName}-${runNumber}-${sha}` : `staging-validate-${refName}-${runNumber}-${sha}`;
-  const releaseTitle = publish ? `Staging ${releaseTag}` : `Staging validation ${releaseTag}`;
+  const baseTitle = publish ? `Staging ${releaseTag}` : `Staging validation ${releaseTag}`;
+  const releaseTitle = publish && !signed ? `${baseTitle} (unsigned)` : baseTitle;
 
   return {
     channel: 'staging',
@@ -106,13 +127,15 @@ function buildStagingContext({ mode, requestedRef, commitSha, runNumber }) {
     uploadArtifacts: publish ? 'false' : 'true',
     updateTapTarget: publish ? 'staging' : 'none',
     notesMode: publish ? 'staging' : 'none',
-    stageSource: publish ? 'notarized-package' : 'build-output',
+    stageSource: notarized ? 'notarized-package' : 'build-output',
+    signed: signed ? 'true' : 'false',
     releaseTarget: commitSha,
   };
 }
 
-function buildContext({ mode, requestedRef, commitSha, runNumber }) {
+function buildContext({ mode, requestedRef, commitSha, runNumber, signing }) {
   if (mode === 'production-shipping' || mode === 'production-verify') {
+    const signed = signing === 'available';
     const tag = trimRefPrefix(requestedRef);
     if (!tag.startsWith('v')) {
       throw new Error(`Production mode requires a version tag ref, got: ${requestedRef}`);
@@ -127,20 +150,21 @@ function buildContext({ mode, requestedRef, commitSha, runNumber }) {
       requestedRef,
       commitSha,
       releaseTag: tag,
-      releaseTitle: `Release ${tag}`,
+      releaseTitle: signed || mode !== 'production-shipping' ? `Release ${tag}` : `Release ${tag} (unsigned)`,
       version,
       prerelease: prerelease ? 'true' : 'false',
       publishRelease: mode === 'production-shipping' ? 'true' : 'false',
       uploadArtifacts: mode === 'production-verify' ? 'true' : 'false',
       updateTapTarget: mode === 'production-shipping' ? (prerelease ? 'staging' : 'production') : 'none',
       notesMode: mode === 'production-shipping' ? 'changelog' : 'none',
-      stageSource: 'notarized-package',
+      stageSource: signed ? 'notarized-package' : 'build-output',
+      signed: signed ? 'true' : 'false',
       releaseTarget: commitSha,
     };
   }
 
   if (mode === 'staging-publish' || mode === 'staging-validate') {
-    return buildStagingContext({ mode, requestedRef, commitSha, runNumber });
+    return buildStagingContext({ mode, requestedRef, commitSha, runNumber, signing });
   }
 
   throw new Error(`Unsupported mode: ${mode}`);

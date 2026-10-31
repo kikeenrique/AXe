@@ -50,6 +50,27 @@ jobs:
           chmod +x scripts/publish-github-release.sh
           chmod +x scripts/update-homebrew-tap.sh
 
+      # Forks have no signing or notarization secrets; every mode then builds from the build output
+      # without notarization and publishes unsigned (see release-context.mjs). Only presence is tested.
+      - name: Resolve signing availability
+        id: signing_availability
+        env:
+          DEVELOPER_ID_APPLICATION_P12: ${{ secrets.DEVELOPER_ID_APPLICATION_P12 }}
+          NOTARIZE_APP_STORE_CONNECT_API_KEY: ${{ secrets.NOTARIZE_APP_STORE_CONNECT_API_KEY }}
+          NOTARIZE_APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.NOTARIZE_APP_STORE_CONNECT_API_KEY_ID }}
+          NOTARIZE_APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.NOTARIZE_APP_STORE_CONNECT_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          if [ -n "$DEVELOPER_ID_APPLICATION_P12" ] \
+            && [ -n "$NOTARIZE_APP_STORE_CONNECT_API_KEY" ] \
+            && [ -n "$NOTARIZE_APP_STORE_CONNECT_API_KEY_ID" ] \
+            && [ -n "$NOTARIZE_APP_STORE_CONNECT_ISSUER_ID" ]; then
+            echo "signing=available" >> "$GITHUB_OUTPUT"
+          else
+            echo "Signing and notarization secrets are incomplete; signing is unavailable"
+            echo "signing=unavailable" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Resolve release context
         id: context
         run: |
@@ -59,6 +80,7 @@ jobs:
             --requested-ref "${{ inputs.requested_ref }}" \
             --commit-sha "$COMMIT_SHA" \
             --run-number "${{ github.run_number }}" \
+            --signing "${{ steps.signing_availability.outputs.signing }}" \
             >> "$GITHUB_OUTPUT"
 
       - name: Resolve IDB cache inputs
@@ -85,6 +107,7 @@ jobs:
         run: |
           set -euo pipefail
           PINNED_IDB_URL="${{ steps.idb_inputs.outputs.idb_url }}"
+          PINNED_IDB_COMMIT="${{ steps.idb_inputs.outputs.idb_commit }}"
 
           if [ -d "idb_checkout/.git" ]; then
             LOCAL_COMMIT=$(git -C idb_checkout rev-parse HEAD)
@@ -136,11 +159,11 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "$DEVELOPER_ID_APPLICATION_P12" ]; then
-            if [ "${{ steps.context.outputs.publishRelease }}" = "true" ]; then
+            if [ "${{ steps.context.outputs.stageSource }}" = "notarized-package" ]; then
               echo "❌ Code signing certificate is required for publishing runs"
               exit 1
             fi
-            echo "⚠️ No certificate provided - validation build will remain unsigned"
+            echo "⚠️ No certificate provided - ${{ inputs.mode }} build will remain unsigned"
             echo "has_certificate=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -291,6 +314,23 @@ jobs:
           HOMEBREW_SHA256=$(shasum -a 256 "$HOMEBREW_ARCHIVE_NAME" | awk '{print $1}')
           echo "archive_sha256=$HOMEBREW_SHA256" >> "$GITHUB_OUTPUT"
 
+      # Homebrew taps that pull by tag need an asset name that does not change between releases.
+      - name: Create stable-name archive and checksums
+        id: create_checksums
+        run: |
+          set -euo pipefail
+          STABLE_ARCHIVE_NAME="axe-aarch64-apple-darwin.tar.gz"
+          cp "${{ steps.create_homebrew_archive.outputs.archive_name }}" "$STABLE_ARCHIVE_NAME"
+          cmp "${{ steps.create_homebrew_archive.outputs.archive_name }}" "$STABLE_ARCHIVE_NAME"
+          shasum -a 256 \
+            "${{ steps.create_archive.outputs.archive_name }}" \
+            "${{ steps.create_homebrew_archive.outputs.archive_name }}" \
+            "$STABLE_ARCHIVE_NAME" \
+            > SHA256SUMS
+          shasum -a 256 -c SHA256SUMS
+          echo "stable_archive_name=$STABLE_ARCHIVE_NAME" >> "$GITHUB_OUTPUT"
+          echo "checksums_name=SHA256SUMS" >> "$GITHUB_OUTPUT"
+
       - name: Smoke test staged CLI resources
         run: scripts/release-artifacts.sh smoke-test-stage --stage-dir "$RUNNER_TEMP/release-stage"
 
@@ -347,13 +387,20 @@ jobs:
       - name: Generate release notes
         if: steps.context.outputs.notesMode != 'none'
         run: |
-          node scripts/generate-github-release-notes.mjs \
-            --channel "${{ steps.context.outputs.channel }}" \
-            --version "${{ steps.context.outputs.version }}" \
-            --fallback newest-older \
-            --ref "${{ inputs.requested_ref }}" \
-            --commit-sha "${{ steps.context.outputs.commitSha }}" \
+          set -euo pipefail
+          NOTES_ARGS=(
+            --channel "${{ steps.context.outputs.channel }}"
+            --version "${{ steps.context.outputs.version }}"
+            --fallback newest-older
+            --ref "${{ inputs.requested_ref }}"
+            --commit-sha "${{ steps.context.outputs.commitSha }}"
+            --tap-owner "${{ github.repository_owner }}"
             --out github-release-body.md
+          )
+          if [ "${{ steps.context.outputs.signed }}" = "false" ]; then
+            NOTES_ARGS+=(--unsigned)
+          fi
+          node scripts/generate-github-release-notes.mjs "${NOTES_ARGS[@]}"
 
       - name: Upload build artifacts
         if: steps.context.outputs.uploadArtifacts == 'true'
@@ -363,6 +410,8 @@ jobs:
           path: |
             ${{ steps.create_archive.outputs.archive_name }}
             ${{ steps.create_homebrew_archive.outputs.archive_name }}
+            ${{ steps.create_checksums.outputs.stable_archive_name }}
+            ${{ steps.create_checksums.outputs.checksums_name }}
           retention-days: 30
 
       - name: Publish GitHub release
@@ -377,6 +426,8 @@ jobs:
             --target "${{ steps.context.outputs.releaseTarget }}"
             --asset "${{ steps.create_archive.outputs.archive_name }}"
             --asset "${{ steps.create_homebrew_archive.outputs.archive_name }}"
+            --asset "${{ steps.create_checksums.outputs.stable_archive_name }}"
+            --asset "${{ steps.create_checksums.outputs.checksums_name }}"
           )
 
           if [ "${{ steps.context.outputs.prerelease }}" = "true" ]; then
@@ -398,12 +449,23 @@ jobs:
           fi
 
           if [ -z "$TOKEN" ]; then
+            if [ "${{ steps.context.outputs.channel }}" = "staging" ] && [ "${{ steps.context.outputs.updateTapTarget }}" = "staging" ]; then
+              echo "::notice::No Homebrew staging tap token available; skipping the staging tap update (${{ github.repository_owner }}/homebrew-axe-staging)"
+              exit 0
+            fi
+            # An unsigned release comes from a repository without the release secrets (a fork);
+            # its taps, if any, pull the release assets themselves.
+            if [ "${{ steps.context.outputs.signed }}" = "false" ]; then
+              echo "::notice::No Homebrew tap token available for an unsigned release; skipping the ${{ steps.context.outputs.updateTapTarget }} tap update"
+              exit 0
+            fi
             echo "No Homebrew tap token available for ${{ steps.context.outputs.updateTapTarget }}"
             exit 1
           fi
 
           scripts/update-homebrew-tap.sh \
             --target "${{ steps.context.outputs.updateTapTarget }}" \
+            --tap-owner "${{ github.repository_owner }}" \
             --version "${{ steps.context.outputs.version }}" \
             --archive-url "https://github.com/${{ github.repository }}/releases/download/${{ steps.context.outputs.releaseTag }}/${{ steps.create_homebrew_archive.outputs.archive_name }}" \
             --archive-sha "${{ steps.create_homebrew_archive.outputs.archive_sha256 }}" \

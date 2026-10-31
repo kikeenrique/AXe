@@ -4,7 +4,9 @@ on:
   push:
     branches:
       - main
+      - 'staging/**'
   pull_request:
+    types: [opened, synchronize, reopened, labeled]
   workflow_dispatch:
     inputs:
       ref:
@@ -25,8 +27,9 @@ permissions:
   actions: read
 
 jobs:
+  # Adding a label is not a code change, so it does not validate again.
   staging-validate:
-    if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.event.inputs.intent == 'validate')
+    if: (github.event_name == 'pull_request' && github.event.action != 'labeled') || (github.event_name == 'workflow_dispatch' && github.event.inputs.intent == 'validate')
     permissions:
       contents: read
       actions: read
@@ -35,8 +38,18 @@ jobs:
       mode: staging-validate
       requested_ref: ${{ github.event_name == 'pull_request' && github.sha || github.event.inputs.ref }}
 
+  # A pull request publishes when it carries the publish-staging label: on new commits, and when
+  # that label is added. Only pull requests from this repository: a fork's head branch is not
+  # here to check out, and its runs get a read-only token. The head branch (not the merge ref) is
+  # built, tagged and targeted.
   staging-publish:
-    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.event.inputs.intent == 'publish')
+    if: >-
+      github.event_name == 'push'
+      || (github.event_name == 'workflow_dispatch' && github.event.inputs.intent == 'publish')
+      || (github.event_name == 'pull_request'
+        && github.event.pull_request.head.repo.full_name == github.repository
+        && contains(github.event.pull_request.labels.*.name, 'publish-staging')
+        && (github.event.action != 'labeled' || github.event.label.name == 'publish-staging'))
     permissions:
       contents: write
       actions: read
@@ -44,4 +57,4 @@ jobs:
     secrets: inherit
     with:
       mode: staging-publish
-      requested_ref: ${{ github.event_name == 'push' && github.ref || github.event.inputs.ref }}
+      requested_ref: ${{ github.event_name == 'push' && github.ref || github.event_name == 'pull_request' && github.event.pull_request.head.ref || github.event.inputs.ref }}
