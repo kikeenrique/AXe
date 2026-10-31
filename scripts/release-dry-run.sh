@@ -246,6 +246,16 @@ if (!unsignedProductionNotes.includes('## Unsigned build') || !unsignedProductio
 if (forkProductionNotes.includes('## Unsigned build')) {
   throw new Error('signed production release notes must not carry the unsigned build notice');
 }
+
+// A prerelease without its own CHANGELOG heading takes the Unreleased section; a stable version
+// without one still takes the newest older release.
+const prereleaseNotes = execFileSync('node', ['scripts/generate-github-release-notes.mjs', '--channel', 'production', '--version', '999.0.0-prerelease.1', '--fallback', 'newest-older'], { encoding: 'utf8' });
+if (!prereleaseNotes.includes('CHANGELOG entry from `Unreleased` for `999.0.0-prerelease.1`')) {
+  throw new Error('prerelease notes must come from the Unreleased CHANGELOG section');
+}
+if (forkProductionNotes.includes('from `Unreleased`')) {
+  throw new Error('stable release notes must not come from the Unreleased CHANGELOG section');
+}
 NODE
 
 # The tap script requires the tap owner; without arguments it prints the usage and fails.

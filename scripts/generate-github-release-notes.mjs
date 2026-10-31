@@ -160,6 +160,22 @@ function extractChangelogSection(changelog, version, fallbackMode) {
 
   let resolvedVersion = normalizedTarget;
 
+  // A prerelease (a version with a "-") ships what is still under "Unreleased": prefer that section
+  // over an older release's notes when the prerelease has no heading of its own.
+  if (sectionStartLine === -1 && fallbackMode === 'newest-older' && normalizedTarget.includes('-')) {
+    const hasUnreleased = lines.some((line) => {
+      const match = line.match(VERSION_HEADING_REGEX);
+      return match !== null && normalizeVersion(match[1]) === 'Unreleased';
+    });
+    if (hasUnreleased) {
+      try {
+        return extractChangelogSection(changelog, 'Unreleased', 'none');
+      } catch {
+        // An empty Unreleased section falls through to the newest older release.
+      }
+    }
+  }
+
   if (sectionStartLine === -1 && fallbackMode === 'newest-older') {
     const versions = [];
     for (const line of lines) {
