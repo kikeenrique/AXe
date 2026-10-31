@@ -3,7 +3,15 @@ import Foundation
 
 struct DescribeUI: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
-        abstract: "Describes the UI hierarchy of a booted simulator using accessibility information."
+        abstract: "Describes the UI hierarchy of a booted simulator using accessibility information.",
+        discussion: """
+        Each element carries `focused`: true on the element that has focus (on tvOS, the item the Siri Remote moves), false or null elsewhere. --focused prints only that element.
+
+        Examples:
+          axe describe-ui --udid SIMULATOR_UDID
+          axe describe-ui --point 100,200 --udid SIMULATOR_UDID
+          axe describe-ui --focused --udid SIMULATOR_UDID
+        """
     )
 
     @Option(name: .customLong("udid"), help: "The UDID of the simulator.")
@@ -24,8 +32,17 @@ struct DescribeUI: AsyncParsableCommand {
     )
     var allDisplays = false
 
+    @Flag(
+        name: .customLong("focused"),
+        help: "Print only the focused element (the one whose `focused` is true, the deepest if several are), without its children. Fails with \"No focused element\" when no element reports focus. On tvOS this is the item the Siri Remote moves; use it after `axe remote`."
+    )
+    var focused = false
+
     func validate() throws {
         _ = try parsedPoint()
+        if focused, point != nil {
+            throw ValidationError("--focused cannot be combined with --point.")
+        }
     }
 
     func run() async throws {
@@ -36,6 +53,7 @@ struct DescribeUI: AsyncParsableCommand {
             for: simulatorUDID,
             point: try parsedPoint(),
             allDisplays: allDisplays,
+            focusedOnly: focused,
             logger: logger
         )
         guard let jsonString = String(data: jsonData, encoding: .utf8) else {

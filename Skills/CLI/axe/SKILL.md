@@ -4,7 +4,7 @@ description: Provides agent-ready AXe CLI usage guidance for iOS Simulator autom
 ---
 
 ## Step 1: Confirm runtime context
-1. Identify simulator UDID target first (`axe list-simulators`). Each line ends with `Platform '<iOS|watchOS|tvOS|visionOS|unknown>'`; AXe is built for iOS (iPad reports `iOS`). On watchOS use coordinate taps (`tap -x -y`, `swipe`), `button home|side-button|lock|siri` and `describe-ui --point`: selector taps fail because the accessibility tree is only an empty root. On tvOS touch commands are refused; use `axe remote up|down|left|right|select|menu|play-pause` and `button play-pause|volume-up|volume-down`. On visionOS every input command is refused (IDB v1.7.7 has no visionOS input); screenshot, video and `posture` work. `rotate` and `hinge` are iOS only. Do not retry these refusals.
+1. Identify simulator UDID target first (`axe list-simulators`). Each line ends with `Platform '<iOS|watchOS|tvOS|visionOS|unknown>'`; AXe is built for iOS (iPad reports `iOS`). On watchOS `describe-ui`, selector taps (`tap --label`), coordinate taps, `swipe` and `button home|side-button|lock|siri` work; scroll with the Digital Crown: `axe crown --delta 50` (down) and `axe crown --delta=-50` (up). On tvOS touch commands are refused; use `axe remote up|down|left|right|select|menu|play-pause` and `button play-pause|volume-up|volume-down`; `describe-ui` works and marks the focused element `focused: true`, `describe-ui --focused` prints only it (check it after each `remote` move), and `type`/`key-sequence` type straight into the focused text field. On visionOS every input command is refused (the bundled IDB has no visionOS input); screenshot, video and `posture` work. `rotate` and `hinge` are iOS only, `crown` watchOS only, `remote` tvOS only. Do not retry these refusals.
 2. Simulator-interaction AXe commands require `--udid <UDID>`. Commands like `list-simulators` and `init` do not.
 3. Run `axe describe-ui --udid <UDID>` to inspect the full current screen. Use `axe describe-ui --point <X,Y> --udid <UDID>` to inspect the element at a specific coordinate. Use the output to discover available `--id` and `--label` values for selector taps and slider setting, and to confirm coordinates for coordinate-based taps.
    On a foldable simulator (iPhone Duo) run `axe posture --udid <UDID>` first. While the inner display is active, `describe-ui` reports only that display's windows with frames in its interface points (the same space as `-x/-y` and `axe screenshot` pixels / 3), and `--point <X,Y>` takes interface points of that display. `describe-ui --all-displays` prints the active display's tree as the simulator reports it (SpringBoard frames in native portrait points, not touch coordinates); use it only for debugging. A stderr warning "could not determine the active display" means the output is that raw tree. On the folded cover, home-screen frames can differ from the visible layout, so confirm targets with a screenshot.
@@ -12,7 +12,7 @@ description: Provides agent-ready AXe CLI usage guidance for iOS Simulator autom
 
 ## Step 2: Choose the right command
 
-Available commands: `init`, `tap`, `slider`, `swipe`, `drag`, `gesture`, `touch`, `type`, `button`, `key`, `key-sequence`, `key-combo`, `remote` (tvOS), `batch`, `describe-ui`, `screenshot`, `record-video`, `stream-video`, `hinge`, `posture`, `rotate`, `list-simulators`. Run `axe --help` or `axe <command> --help` for full options.
+Available commands: `init`, `tap`, `slider`, `swipe`, `drag`, `gesture`, `touch`, `type`, `button`, `key`, `key-sequence`, `key-combo`, `remote` (tvOS), `crown` (watchOS), `batch`, `describe-ui`, `screenshot`, `record-video`, `stream-video`, `hinge`, `posture`, `rotate`, `list-simulators`. Run `axe --help` or `axe <command> --help` for full options.
 
 Common examples:
 ```bash
@@ -34,6 +34,8 @@ axe hinge open --udid <UDID>
 axe posture --json --udid <UDID>
 axe rotate portrait --udid <UDID>
 axe remote down --count 2 --udid <UDID>      # tvOS only
+axe describe-ui --focused --udid <UDID>      # the focused element (tvOS focus)
+axe crown --delta 50 --udid <UDID>           # watchOS only; --delta=-50 scrolls back
 ```
 
 ## Step 3: Understand the execution model
@@ -79,7 +81,8 @@ Key rules:
 - Steps run in order; default is fail-fast.
 - Add `--continue-on-error` for best-effort execution.
 - Do not pass `--udid` inside step lines; keep it at batch level.
-- On tvOS use `remote <action> [--count N] [--delay ms]` steps; touch steps are refused there.
+- On tvOS use `remote <action> [--count N] [--delay ms]` steps; touch steps are refused there. On watchOS use `crown --delta <d>` steps to scroll.
+- Before any step runs, batch checks every step against the simulator's platform; a refused step (a `tap` on tvOS, `crown` off watchOS, `rotate` off iOS) fails the batch with nothing sent. With `--continue-on-error` it fails at its turn instead.
 - `hinge <set <degrees>|open|close|half>` and `rotate <orientation>` steps are barriers; later steps re-read display and accessibility state, so touch steps after a fold or rotation go to the newly active display.
 
 ## Step 6: Verify outcomes

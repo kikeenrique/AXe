@@ -600,3 +600,164 @@ struct BatchRemoteStepTests {
         }
     }
 }
+
+@Suite("Crown command")
+struct CrownCommandTests {
+    private static let udid = "00000000-0000-0000-0000-000000000000"
+
+    private func message(_ body: () throws -> Void) -> String? {
+        do {
+            try body()
+            return nil
+        } catch let error as CLIError {
+            return error.message
+        } catch {
+            return "\(error)"
+        }
+    }
+
+    @Test("Defaults are IDB's: 10 steps 16 ms apart")
+    func defaults() throws {
+        let crown = try Crown.parse(["--delta", "50", "--udid", Self.udid])
+        #expect(crown.rotation == CrownRotation(delta: 50, steps: 10, intervalMilliseconds: 16))
+        #expect(CrownRotation.defaultSteps == 10)
+        #expect(CrownRotation.defaultIntervalMilliseconds == 16)
+    }
+
+    @Test("Negative deltas parse with = and as a separate value", arguments: [["--delta=-50"], ["--delta", "-50"]])
+    func negativeDelta(arguments: [String]) throws {
+        let crown = try Crown.parse(arguments + ["--udid", Self.udid])
+        #expect(crown.delta == -50)
+    }
+
+    @Test("Steps and interval map to the reports IDB sends")
+    func eventMapping() throws {
+        let crown = try Crown.parse(["--delta", "200", "--steps", "20", "--interval-ms", "8", "--udid", Self.udid])
+        let rotation = crown.rotation
+        #expect(rotation.steps == 20)
+        #expect(rotation.deltaPerStep == 10)
+        #expect(rotation.interval == .milliseconds(8))
+        #expect(CrownRotation(delta: -50, steps: 10, intervalMilliseconds: 16).deltaPerStep == -5)
+    }
+
+    @Test(
+        "Out-of-range options are refused",
+        arguments: [
+            ["--delta", "0"],
+            ["--delta", "nan"],
+            ["--delta", "20000"],
+            ["--delta", "50", "--steps", "0"],
+            ["--delta", "50", "--steps", "1001"],
+            ["--delta", "50", "--interval-ms", "-1"],
+            ["--delta", "50", "--interval-ms", "1001"],
+            ["--steps", "10"],
+        ]
+    )
+    func validation(arguments: [String]) {
+        #expect(throws: (any Error).self) {
+            _ = try Crown.parse(arguments + ["--udid", Self.udid])
+        }
+    }
+
+    @Test("crown is watchOS only", arguments: [SimulatorPlatform.iOS, .tvOS, .visionOS, .unknown])
+    func watchOSOnly(platform: SimulatorPlatform) throws {
+        let text = message { try PlatformSupport.check(.crown, on: platform) }
+        #expect(text == "Crown is only available on watchOS simulators (this simulator runs \(platform.phrase))")
+        try PlatformSupport.check(.crown, on: .watchOS)
+    }
+
+    @Test("A missing simulator is not found before the crown platform check")
+    func missingSimulator() {
+        #expect(message {
+            try PlatformSupport.check(.crown, simulatorUDID: Self.udid) { _ in nil }
+        } == CLIError.simulatorNotFound(udid: Self.udid).message)
+    }
+
+    @Test("crown --help documents negative deltas and the defaults")
+    func help() {
+        let discussion = Crown.configuration.discussion
+        #expect(discussion.contains("--delta=-50"))
+        #expect(discussion.contains("default 10 reports 16 ms apart"))
+        #expect(discussion.contains("watchOS simulators only"))
+    }
+}
+
+@Suite("Batch crown step")
+@MainActor
+struct BatchCrownStepTests {
+    @Test("crown is a batch step kind")
+    func stepKind() {
+        #expect(BatchStepKind(rawValue: "crown") == .crown)
+    }
+
+    @Test("A crown step is parsed as the crown command and checks the simulator first")
+    func parsesCrownStep() async throws {
+        let udid = "00000000-0000-0000-0000-000000000000"
+        let context = BatchContext(simulatorUDID: udid, axCachePolicy: .perBatch, typeSubmissionMode: .chunked, typeChunkSize: 200)
+        do {
+            _ = try await BatchStepParser.parseStepTokens(["crown", "--delta=-50"], globalUDID: udid, context: context, logger: AxeLogger())
+            Issue.record("Expected the missing simulator to fail the step")
+        } catch let error as CLIError {
+            #expect(error.message == CLIError.simulatorNotFound(udid: udid).message)
+        }
+        await #expect(throws: (any Error).self) {
+            _ = try await BatchStepParser.parseStepTokens(["crown", "--delta", "0"], globalUDID: udid, context: context, logger: AxeLogger())
+        }
+    }
+}
+
+@Suite("Batch platform check before any step runs")
+struct BatchPlatformPreflightTests {
+    private func refusal(_ steps: [String], on platform: SimulatorPlatform) -> String? {
+        do {
+            try Batch.checkPlatform(of: steps, on: platform)
+            return nil
+        } catch let error as CLIError {
+            return error.message
+        } catch {
+            return "\(error)"
+        }
+    }
+
+    @Test("A tvOS touch step after a remote step refuses the batch, naming the step")
+    func tvOSTouchAfterRemote() throws {
+        let text = try #require(refusal(["remote up", "tap -x 10 -y 10", "button home"], on: .tvOS))
+        #expect(text.hasPrefix("Step 2 failed: [tap]\nTouch input is not available on tvOS simulators; use `axe remote`"))
+        #expect(text.contains("No step was run"))
+    }
+
+    @Test(
+        "Each step kind gets its command's platform rule",
+        arguments: [
+            ("crown --delta 50", SimulatorPlatform.iOS, "Crown is only available on watchOS simulators"),
+            ("crown --delta=-50", .tvOS, "Crown is only available on watchOS simulators"),
+            ("remote down", .watchOS, "Remote is only available on tvOS simulators"),
+            ("rotate landscape", .watchOS, "Rotate is only available on iOS simulators"),
+            ("hinge open", .tvOS, "Hinge is only available on iOS simulators"),
+            ("button home", .tvOS, "Button 'home' is not available on tvOS simulators"),
+            ("button apple-pay", .watchOS, "Button 'apple-pay' is not available on watchOS simulators"),
+            ("swipe --start-x 1 --start-y 1 --end-x 2 --end-y 2", .tvOS, "Touch input is not available on tvOS simulators"),
+            ("gesture scroll-up", .tvOS, "Touch input is not available on tvOS simulators"),
+            ("touch -x 1 -y 1 --down", .tvOS, "Touch input is not available on tvOS simulators"),
+            ("type hello", .visionOS, "Input is not supported on visionOS simulators"),
+            ("key 40", .visionOS, "Input is not supported on visionOS simulators"),
+        ]
+    )
+    func rules(step: String, platform: SimulatorPlatform, prefix: String) throws {
+        let text = try #require(refusal(["sleep 0", step], on: platform))
+        #expect(text.hasPrefix("Step 2 failed: [\(step.split(separator: " ")[0])]\n\(prefix)"))
+    }
+
+    @Test("Steps the platform takes pass, and steps that do not parse are left to fail when they run")
+    func accepted() {
+        #expect(refusal(["remote up", "type abc", "key-sequence --keycodes 4,5", "button play-pause", "sleep 1"], on: .tvOS) == nil)
+        #expect(refusal(["crown --delta 50", "tap --label Settings", "button home", "swipe --start-x 1 --start-y 1 --end-x 2 --end-y 2"], on: .watchOS) == nil)
+        #expect(refusal(["tap -x 1 -y 1", "rotate landscape", "hinge open", "button apple-pay"], on: .iOS) == nil)
+        #expect(refusal(["unknown-step", "button not-a-button", "type 'unterminated"], on: .tvOS) == nil)
+    }
+
+    @Test("The first refused step is reported")
+    func firstRefusal() {
+        #expect(refusal(["tap -x 1 -y 1", "crown --delta 5"], on: .tvOS)?.hasPrefix("Step 1 failed: [tap]") == true)
+    }
+}

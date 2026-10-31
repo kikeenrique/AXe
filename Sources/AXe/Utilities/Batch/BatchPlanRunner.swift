@@ -43,6 +43,9 @@ struct BatchPlanRunner {
             case .buttonPress(let button, let duration):
                 try await flushPending()
                 try await button.perform(duration: duration, in: session, logger: logger)
+            case .crownRotation(let rotation):
+                try await flushPending()
+                try await rotation.perform(on: session.simulator, logger: logger)
             case .deviceState(let action):
                 try await flushPending()
                 defer {

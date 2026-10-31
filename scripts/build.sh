@@ -55,12 +55,15 @@ load_env_file "${ENV_FILE}"
 DEFAULT_IDB_CHECKOUT_DIR="${REPO_ROOT}/idb_checkout"
 IDB_CHECKOUT_DIR="${IDB_CHECKOUT_DIR:-${DEFAULT_IDB_CHECKOUT_DIR}}"
 IDB_CHECKOUT_DIR="$(cd "$(dirname "$IDB_CHECKOUT_DIR")" && pwd)/$(basename "$IDB_CHECKOUT_DIR")"
-# Upstream facebook/idb, pinned to the immutable commit of tag v1.7.7. IDB_GIT_URL/IDB_GIT_REF
-# overrides are for local development only: refuse_idb_override_in_release_mode rejects them in
-# release commands and on CI. (release-shared.yml parses the two lines below; keep their shape.)
-DEFAULT_IDB_GIT_URL="https://github.com/facebook/idb.git"
-IDB_GIT_URL="${IDB_GIT_URL:-https://github.com/facebook/idb.git}"
-DEFAULT_IDB_GIT_REF="1de1629a8e5e9838d841689e122d0bd0085a92b6"
+# kikeenrique/idb branch axe/platforms, pinned to an immutable commit: upstream facebook/idb tag
+# v1.7.7 (1de1629a8e5e9838d841689e122d0bd0085a92b6) plus four patches proposed upstream (watchOS
+# and tvOS accessibility trees read as XCTest, the watchOS Digital Crown over dtuhidd's scroll
+# service, the Apple TV TVOut display). IDB_GIT_URL/IDB_GIT_REF overrides are for local
+# development only: refuse_idb_override_in_release_mode rejects them in release commands and on
+# CI. (release-shared.yml parses the two lines below; keep their shape.)
+DEFAULT_IDB_GIT_URL="https://github.com/kikeenrique/idb.git"
+IDB_GIT_URL="${IDB_GIT_URL:-https://github.com/kikeenrique/idb.git}"
+DEFAULT_IDB_GIT_REF="74bbfdc5ca309d32de6d6f1676fd5e4f306bb953"
 IDB_GIT_REF="${IDB_GIT_REF:-${DEFAULT_IDB_GIT_REF}}"
 BUILD_OUTPUT_DIR="${BUILD_OUTPUT_DIR:-./build_products}"
 DERIVED_DATA_PATH="${DERIVED_DATA_PATH:-./build_derived_data}"
@@ -439,8 +442,8 @@ function verify_idb_source_state() {
     exit 1
   fi
 
-  # Content markers for the upstream API AXe builds on, so a wrong or rewritten pin fails here
-  # rather than as Swift errors later.
+  # Content markers for the IDB API AXe builds on, including the four axe/platforms patches, so
+  # a wrong or rewritten pin fails here rather than as Swift errors (or silent regressions) later.
   local source_checks=(
     "FBSimulatorControl/Management/SimulatorControlBootstrap.swift|public final class SimulatorControlBootstrap"
     "FBSimulatorControl/Commands/SimulatorHIDCommands.swift|public func connect() async throws -> SimulatorHID"
@@ -450,6 +453,10 @@ function verify_idb_source_state() {
     "FBSimulatorAX/Commands/Simulator+UIAutomation.swift|public func uiAutomation(backend: UIAutomationBackend"
     "FBControlCore/Utility/BundledResources.swift|public static var hostDirectoryPath"
     "FBSimulatorServices/SimulatorFrameworkBridge/SimulatorFrameworkBridgeSelection.swift|\"${SIMULATOR_BRIDGE_NAME}\""
+    "FBSimulatorControl/Commands/SimulatorHIDCommands.swift|public func rotateDigitalCrown(by delta: Double"
+    "FBSimulatorControl/Commands/DisplayCommands.swift|case noIntegratedDisplay"
+    "FBSimulatorAX/Commands/SimulatorAccessibilityCommands.swift|\"com.apple.Carousel\""
+    "FBSimulatorAX/Commands/SimulatorAccessibilityCommands.swift|\"com.apple.PineBoard\""
   )
   local check source_file source_marker
   for check in "${source_checks[@]}"; do
@@ -957,7 +964,7 @@ Commands:
     Print this usage information.
 
   setup
-    Clone the pinned upstream IDB revision into the checkout directory and verify it.
+    Clone the pinned IDB revision into the checkout directory and verify it.
 
   clean
     Clean previous build products and derived data.
@@ -1003,7 +1010,7 @@ Environment Variables (set inline, exported, or via a git-ignored .env file):
   AXE_CODESIGN_IDENTITY  Code-signing identity (required for signing; no default)
   IDB_CHECKOUT_DIR       Directory for IDB repository (default: ./idb_checkout)
   IDB_GIT_URL            IDB repository URL (default: ${DEFAULT_IDB_GIT_URL}); development only
-  IDB_GIT_REF            Exact IDB revision (default: ${DEFAULT_IDB_GIT_REF}, tag v1.7.7);
+  IDB_GIT_REF            Exact IDB revision (default: ${DEFAULT_IDB_GIT_REF}, v1.7.7 + axe/platforms);
                          development only. Both overrides are refused by build, sign-executable,
                          package and notarize, and by every command on CI.
   BUILD_OUTPUT_DIR       Directory for build outputs (default: ./build_products)
@@ -1126,7 +1133,7 @@ function cmd_build() {
   echo ""
 }
 
-# A release must be built from the pinned upstream revision: a stray IDB_GIT_REF or IDB_GIT_URL
+# A release must be built from the pinned IDB revision: a stray IDB_GIT_REF or IDB_GIT_URL
 # (environment or .env) is refused for the release commands and on CI, and kept for local
 # development commands (setup, libraries, dev, ...).
 function refuse_idb_override_in_release_mode() {

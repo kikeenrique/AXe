@@ -8,7 +8,7 @@ Comprehensive reference for all AXe commands. Most simulator-interaction command
 axe list-simulators
 ```
 
-No `--udid` needed. Lists all available simulators with their UDIDs, boot state, runtime and platform (each line ends with `| Platform 'iOS|watchOS|tvOS|visionOS|unknown'`). Off iOS, commands the platform cannot take are refused before anything is sent: tvOS refuses touch (use `remote`), visionOS refuses all input, and `rotate`/`hinge` are iOS only. On watchOS selector taps fail on an empty accessibility tree; use `-x/-y`.
+No `--udid` needed. Lists all available simulators with their UDIDs, boot state, runtime and platform (each line ends with `| Platform 'iOS|watchOS|tvOS|visionOS|unknown'`). Off iOS, commands the platform cannot take are refused before anything is sent: tvOS refuses touch (use `remote`), visionOS refuses all input, `rotate`/`hinge` are iOS only and `crown` is watchOS only. watchOS and tvOS have full accessibility trees: `describe-ui` and (on watchOS) selector taps work. On tvOS `posture` shows the `TVOut` display with role `external`.
 
 ## Tap
 
@@ -174,7 +174,17 @@ axe remote menu --udid <UDID>                   # back
 axe remote play-pause --udid <UDID>
 ```
 
-`--count` is 1 to 100 (default 1); `--delay` is milliseconds between presses (default 150). Refused on other platforms.
+`--count` is 1 to 100 (default 1); `--delay` is milliseconds between presses (default 150). Refused on other platforms. After a move, `axe describe-ui --focused --udid <UDID>` prints the element that now has focus.
+
+## Digital Crown (watchOS only)
+
+```bash
+axe crown --delta 50 --udid <UDID>              # scroll down about one and a half rows
+axe crown --delta=-50 --udid <UDID>             # negative: scroll up (also --delta -50)
+axe crown --delta 200 --steps 20 --interval-ms 16 --udid <UDID>
+```
+
+The rotation is split into `--steps` reports (1 to 1000, default 10) `--interval-ms` apart (0 to 1000, default 16). The watch accelerates the crown: the same delta in fewer, larger or faster steps scrolls further. Pressing the crown is `axe button home`. Refused on other platforms.
 
 ## Batch (multi-step workflows)
 
@@ -233,7 +243,10 @@ See `batch-reference.md` for full batch semantics. Foldable simulators: touch st
 axe describe-ui --udid <UDID>                      # Full screen
 axe describe-ui --point 100,200 --udid <UDID>      # Specific point
 axe describe-ui --all-displays --udid <UDID>       # Foldable: unconverted tree of the active display
+axe describe-ui --focused --udid <UDID>            # Only the focused element (tvOS focus)
 ```
+
+Every element carries `focused`: true on the element that has focus (on tvOS the item the Siri Remote moves), false or null elsewhere. `--focused` prints only that element (the deepest if several report focus), without its children, and fails with "No focused element" when none does; it cannot be combined with `--point`.
 
 Foldable simulators: with the inner display active, `describe-ui` reports only that display's windows, with `frame`/`AXFrame` in its interface points (as `axe screenshot` shows it, pixels / 3), so labels and identifiers appear once and the JSON schema is unchanged. `--point X,Y` takes interface points of the inner display; AXe hit-tests the reported tree (windows front to back, later windows taken as in front; the deepest element containing the point, preferring a label or value over an identifier only) and prints that element. If the active display cannot be determined, `describe-ui` warns on stderr and prints the unfiltered tree. `--all-displays` prints the active display's tree as the simulator reports it, without AXe's conversion: labels appear once, but SpringBoard frames stay in native portrait points; `--point` then uses the simulator's hit test (interface points of the active display). With the cover active, output is unchanged; home-screen frames there can differ from the visible layout, so verify with `axe screenshot`.
 

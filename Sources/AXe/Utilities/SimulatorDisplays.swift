@@ -186,6 +186,9 @@ struct SimulatorDisplay: Decodable, Equatable {
 
 /// Integrated displays of one simulator plus the device orientation.
 ///
+/// A simulator that reports displays but no integrated one keeps its sole primary display, as IDB
+/// targets it: an Apple TV's only display is its external `TVOut`.
+///
 /// Built from IDB's display configuration (`Simulator.displays.configuration()`, read in process)
 /// for touch routing, describe-ui and captures, or decoded from devicectl for `axe posture`, which
 /// also prints the backlight and the device orientation.
@@ -197,9 +200,18 @@ struct SimulatorDisplayState: Equatable {
     let jsonVersion: Int?
 
     init(displays: [SimulatorDisplay], deviceOrientation: String? = nil, jsonVersion: Int? = supportedJSONVersion) {
-        self.displays = displays.filter(\.isIntegrated)
+        self.displays = Self.interactionDisplays(displays)
         self.deviceOrientation = deviceOrientation
         self.jsonVersion = jsonVersion
+    }
+
+    /// The integrated displays; without any, the sole primary display (an Apple TV's external
+    /// TVOut), as IDB targets it; otherwise none.
+    static func interactionDisplays(_ displays: [SimulatorDisplay]) -> [SimulatorDisplay] {
+        let integrated = displays.filter(\.isIntegrated)
+        guard integrated.isEmpty else { return integrated }
+        let primary = displays.filter(\.primary)
+        return primary.count == 1 ? primary : []
     }
 
     var isMultiDisplay: Bool {
@@ -243,7 +255,8 @@ struct SimulatorDisplayState: Equatable {
     /// A runtime that does not identify its displays reports no displays and only the geometry of
     /// its sole integrated display (`.unidentified`); that display is kept, without IDs or a name.
     init(configuration: FBSimulatorControl.SimulatorDisplayConfiguration, displayIDs: [String: Int]) {
-        let displays = configuration.displays.filter(\.isIntegrated).map { display in
+        // `init(displays:)` keeps the integrated displays, or a sole primary external one.
+        let displays = configuration.displays.map { display in
             let size = SimulatorDisplay.Size(width: Double(display.bounds.width), height: Double(display.bounds.height))
             let active: Bool?
             switch display.activity {
@@ -266,7 +279,8 @@ struct SimulatorDisplayState: Equatable {
                 currentOrientation: display.rotation.rawValue,
                 nativeSize: size,
                 pointScale: display.scale,
-                bounds: size
+                bounds: size,
+                isIntegrated: display.isIntegrated
             )
         }
         var unidentified: SimulatorDisplay?

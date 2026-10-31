@@ -110,13 +110,27 @@ struct AccessibilityFetcher {
     /// point) is hit-tested against that tree in AXe, because the simulator's hit test only knows
     /// the main display (see `DescribeUIOutput`). Elsewhere, or with `allDisplays`, the
     /// simulator's output is returned unchanged.
+    ///
+    /// With `focusedOnly`, only the focused element of that tree is returned, with its subtree
+    /// (`DescribeUIOutput.focusedElementData`).
     static func fetchDescribeUIJSONData(
         for simulatorUDID: String,
         point: AccessibilityPoint?,
         allDisplays: Bool,
+        focusedOnly: Bool = false,
         logger: AxeLogger,
         recoveryDependencies: AccessibilityRecoveryDependencies = .live
     ) async throws -> Data {
+        if focusedOnly {
+            let tree = try await fetchDescribeUIJSONData(
+                for: simulatorUDID,
+                point: nil,
+                allDisplays: allDisplays,
+                logger: logger,
+                recoveryDependencies: recoveryDependencies
+            )
+            return try DescribeUIOutput.focusedElementData(in: tree)
+        }
         let simulator = try await simulator(udid: simulatorUDID, logger: logger)
         if !allDisplays {
             SimulatorDisplays.warnIfProbeDisabled(simulatorUDID: simulatorUDID, logger: logger)
@@ -591,7 +605,8 @@ struct AccessibilityFetcher {
 
     // This key set preserves AXe's legacy public JSON schema; update it only with explicit schema coverage.
     // IDB's accessibility backend returns `traits` (the fork's serializer emptied the hierarchy when
-    // they were requested, so AXe used to print an empty placeholder).
+    // they were requested, so AXe used to print an empty placeholder). `focused` is true on the element
+    // that has focus (the tvOS focus engine's focused item) and false or null elsewhere.
     static let accessibilityOutputKeys: Set<AXKeys> = [
         .label,
         .frame,
@@ -609,5 +624,6 @@ struct AccessibilityFetcher {
         .contentRequired,
         .pid,
         .traits,
+        .focused,
     ]
 }

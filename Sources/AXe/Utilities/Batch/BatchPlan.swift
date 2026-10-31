@@ -12,6 +12,9 @@ enum BatchPrimitive {
     /// A hardware button press. Runs as a barrier so that an Apple Pay press refused by IDB can be
     /// resent as two side-button presses (see `ButtonType.perform`).
     case buttonPress(ButtonType, duration: Double?)
+    /// A Digital Crown rotation (watchOS). Runs as a barrier: IDB sends it over the scroll service,
+    /// a connection of its own, and returns once the simulator has taken every report.
+    case crownRotation(CrownRotation)
 }
 
 struct BatchPlan {

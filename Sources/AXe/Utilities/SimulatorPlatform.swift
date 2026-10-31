@@ -126,6 +126,8 @@ enum PlatformSupport {
         case keyboard
         /// Siri Remote focus input (`axe remote`).
         case remote
+        /// Digital Crown rotation (`axe crown`).
+        case crown
     }
 
     static let visionOSInputUnsupportedMessage = "Input is not supported on visionOS simulators: the bundled IDB drives only the touch digitizer service, which visionOS does not provide"
@@ -140,11 +142,21 @@ enum PlatformSupport {
         "Remote is only available on tvOS simulators (this simulator runs \(platform.phrase)); use `axe tap`, `axe swipe` or `axe button` instead"
     }
 
+    static func crownOnlyMessage(platform: SimulatorPlatform) -> String {
+        "Crown is only available on watchOS simulators (this simulator runs \(platform.phrase))"
+    }
+
     /// Throws when `platform` cannot take `input`.
     static func check(_ input: Input, on platform: SimulatorPlatform) throws {
         if input == .remote {
             guard platform == .tvOS else {
                 throw CLIError(errorDescription: remoteOnlyMessage(platform: platform))
+            }
+            return
+        }
+        if input == .crown {
+            guard platform == .watchOS else {
+                throw CLIError(errorDescription: crownOnlyMessage(platform: platform))
             }
             return
         }

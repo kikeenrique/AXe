@@ -474,3 +474,67 @@ struct DescribeUIOutputTests {
         }
     }
 }
+
+@Suite("describe-ui --focused")
+struct DescribeUIFocusedTests {
+    /// A tvOS Settings-like tree: a focused container holds the focused cell beside unfocused rows,
+    /// and the cell has decoration children.
+    private static let tvSettings = #"""
+    [{"type":"Application","AXLabel":"Settings","focused":false,"frame":{"x":0,"y":0,"width":1920,"height":1080},"children":[
+      {"type":"Cell","AXLabel":"General","focused":false,"frame":{"x":1056,"y":108,"width":744,"height":70},"children":[]},
+      {"type":"Group","AXLabel":null,"focused":true,"frame":{"x":1056,"y":100,"width":744,"height":800},"children":[
+        {"type":"Cell","AXLabel":"Profiles and Accounts","focused":true,"frame":{"x":1056,"y":268,"width":744,"height":70},
+         "children":[{"type":"Image","AXLabel":null,"focused":false,"children":[]}]},
+        {"type":"Cell","AXLabel":"Video and Audio","focused":null,"frame":{"x":1056,"y":348,"width":744,"height":70},"children":[]}
+      ]}
+    ]}]
+    """#
+
+    @Test("Prints the deepest focused element without its children")
+    func deepestFocused() throws {
+        let data = try DescribeUIOutput.focusedElementData(in: Data(Self.tvSettings.utf8))
+        let element = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        #expect(element["AXLabel"] as? String == "Profiles and Accounts")
+        #expect(element["type"] as? String == "Cell")
+        #expect(element["focused"] as? Bool == true)
+        #expect(element["children"] == nil)
+        #expect(element["frame"] != nil)
+    }
+
+    @Test("A single root object is searched too")
+    func singleRoot() throws {
+        let json = #"{"type":"Button","AXLabel":"Settings","focused":true,"children":[]}"#
+        let data = try DescribeUIOutput.focusedElementData(in: Data(json.utf8))
+        let element = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        #expect(element["AXLabel"] as? String == "Settings")
+    }
+
+    @Test("Among equally deep focused elements the first in tree order wins")
+    func firstAmongEquals() throws {
+        let json = #"[{"type":"Application","children":[{"AXLabel":"A","focused":true},{"AXLabel":"B","focused":true}]}]"#
+        let roots = try #require(JSONSerialization.jsonObject(with: Data(json.utf8)) as? [[String: Any]]).map(DescribedElement.init(json:))
+        #expect(DescribeUIOutput.focusedElement(in: roots)?.json["AXLabel"] as? String == "A")
+    }
+
+    @Test("No focused element is an error, as on an iOS tree where every element reports false or null")
+    func noFocusedElement() {
+        let json = #"[{"type":"Application","focused":false,"children":[{"AXLabel":"General","focused":null}]}]"#
+        do {
+            _ = try DescribeUIOutput.focusedElementData(in: Data(json.utf8))
+            Issue.record("Expected an error")
+        } catch {
+            #expect(error is CLIError)
+            #expect(error.localizedDescription.hasPrefix("No focused element"))
+        }
+    }
+
+    @Test("--focused parses, and is refused with --point")
+    func parsing() throws {
+        let udid = "00000000-0000-0000-0000-000000000000"
+        #expect(try DescribeUI.parse(["--focused", "--udid", udid]).focused)
+        #expect(try DescribeUI.parse(["--udid", udid]).focused == false)
+        #expect(throws: (any Error).self) {
+            _ = try DescribeUI.parse(["--focused", "--point", "1,2", "--udid", udid])
+        }
+    }
+}

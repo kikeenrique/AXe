@@ -228,6 +228,13 @@ extension Remote: BatchConvertible {
     }
 }
 
+extension Crown: BatchConvertible {
+    func toBatchPrimitives(context: BatchContext, logger: AxeLogger) async throws -> [BatchPrimitive] {
+        try PlatformSupport.check(.crown, simulatorUDID: context.simulatorUDID, logger: logger)
+        return [.crownRotation(rotation)]
+    }
+}
+
 extension Key: BatchConvertible {
     func toBatchPrimitives(context: BatchContext, logger: AxeLogger) async throws -> [BatchPrimitive] {
         try PlatformSupport.check(.keyboard, simulatorUDID: context.simulatorUDID, logger: logger)

@@ -213,6 +213,8 @@ enum DisplayRole: String, Encodable, Equatable {
     case cover
     case inner
     case main
+    /// A non-integrated display that is the device's only display: an Apple TV's `TVOut`.
+    case external
 }
 
 /// Hinge angle and display state of a simulator, printed by `axe posture`, `axe hinge` and `axe rotate`.
@@ -282,13 +284,18 @@ struct DevicePosture: Encodable, Equatable {
             return .cover
         case .inner:
             return .inner
-        case .main, nil:
+        case .main, .external, nil:
             return nil
         }
     }
 
+    /// The interface size in points. devicectl reports an Apple TV's TVOut with a zero native size;
+    /// its bounds (in points at scale 1) are used then.
     static func interfaceSize(of display: SimulatorDisplay) -> Size? {
-        guard let native = display.nativeSizePoints else { return nil }
+        guard let native = display.nativeSizePoints, native.width > 0, native.height > 0 else {
+            guard let bounds = display.bounds, bounds.width > 0, bounds.height > 0 else { return nil }
+            return Size(width: bounds.width, height: bounds.height)
+        }
         switch display.currentRotation {
         case .rot90, .rot270:
             return Size(width: native.height, height: native.width)
@@ -298,7 +305,12 @@ struct DevicePosture: Encodable, Equatable {
     }
 
     private static func makeDisplay(_ display: SimulatorDisplay, isMultiDisplay: Bool, isActive: Bool) -> Display {
-        let role: DisplayRole = isMultiDisplay ? (display.primary ? .cover : .inner) : .main
+        let role: DisplayRole
+        if !display.isIntegrated {
+            role = .external
+        } else {
+            role = isMultiDisplay ? (display.primary ? .cover : .inner) : .main
+        }
         return Display(
             id: display.displayId,
             name: display.name,

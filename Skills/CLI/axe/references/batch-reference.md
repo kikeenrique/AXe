@@ -13,11 +13,14 @@ Use this reference when generating or reviewing `axe batch` commands.
 - `key-sequence`
 - `key-combo`
 - `remote <up|down|left|right|select|menu|play-pause> [--count N] [--delay ms]` (tvOS simulators)
+- `crown --delta <d> [--steps N] [--interval-ms M]` (watchOS simulators; negative as `--delta=-50`)
 - `sleep <seconds>` (batch pseudo-step)
 - `hinge <set <degrees>|open|close|half> [--duration <s>] [--no-wait]` (foldable simulators)
 - `rotate <portrait|landscape|portrait-upside-down|landscape-flipped>`
 
-`hinge` and `rotate` are barrier steps: earlier steps finish first, and later steps re-read display state and the accessibility tree (the cached snapshot from `--ax-cache perBatch` is dropped). `hinge sweep`, `hinge get` and `--json` are not available as steps.
+`hinge` and `rotate` are barrier steps: earlier steps finish first, and later steps re-read display state and the accessibility tree (the cached snapshot from `--ax-cache perBatch` is dropped). `hinge sweep`, `hinge get` and `--json` are not available as steps. `crown` steps run as barriers too: earlier steps finish first, and the rotation has been taken when the next step starts.
+
+Before any step runs, batch checks every step against the simulator's platform with the rules of its command: touch steps are refused on tvOS, `remote` off tvOS, `crown` off watchOS, `rotate` and `hinge` off iOS, and `button` takes the platform's buttons. A refused step fails the whole batch with `Step N failed: [name]` and nothing sent, so earlier steps are not left applied. With `--continue-on-error` this check is skipped and a refused step fails when its turn comes.
 
 ## Batch flags
 - `--udid <UDID>`: required simulator target.

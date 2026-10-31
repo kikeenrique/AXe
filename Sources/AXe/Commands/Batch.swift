@@ -7,11 +7,14 @@ struct Batch: AsyncParsableCommand {
         abstract: "Execute ordered interaction steps using one simulator/HID session.",
         discussion: """
         Batch executes multiple interaction steps in one command to reduce overhead.
-        Steps are executed in order.
+        Steps are executed in order. Before any step runs, every step is checked against the
+        simulator's platform (touch off tvOS, remote on tvOS only, crown on watchOS only, rotate and
+        hinge on iOS only, the platform's buttons); a refused step fails the batch with nothing sent.
+        With --continue-on-error a refused step fails when its turn comes instead.
 
         Supported step commands:
           tap, swipe, gesture, touch, type, button, key, key-sequence, key-combo,
-          remote (tvOS only)
+          remote (tvOS only), crown (watchOS only)
 
         Device-state steps (barriers; later steps re-read display and accessibility state):
           hinge <set <degrees>|open|close|half> [--duration <s>] [--no-wait]
@@ -106,6 +109,11 @@ struct Batch: AsyncParsableCommand {
             )
         }
 
+        if !continueOnError {
+            let platform = try await SimulatorSession.requirePlatform(udid: simulatorUDID, logger: logger)
+            try Self.checkPlatform(of: stepLines, on: platform)
+        }
+
         let session = try await HIDInteractor.makeSession(for: simulatorUDID, logger: logger)
         let runner = BatchPlanRunner(session: session, logger: logger, context: context)
 
@@ -140,6 +148,24 @@ struct Batch: AsyncParsableCommand {
         }
 
         print("✓ Batch completed successfully (\(stepLines.count) steps)")
+    }
+
+    /// Checks every step against the simulator's platform before any step runs, so a step the
+    /// platform refuses (a touch step on tvOS, `crown` off watchOS, `rotate` off iOS) fails the batch
+    /// with nothing sent, instead of after the earlier steps have been applied. Throws the first
+    /// refusal, in the shape of a step failure. Steps that do not tokenize are left to fail when
+    /// they run.
+    static func checkPlatform(of stepLines: [String], on platform: SimulatorPlatform) throws {
+        for (index, line) in stepLines.enumerated() {
+            guard let tokens = try? ShellTokenizer.tokenize(line) else { continue }
+            do {
+                try BatchStepParser.checkPlatform(ofStep: tokens, on: platform)
+            } catch {
+                throw CLIError(
+                    errorDescription: "Step \(index + 1) failed: [\(tokens.first ?? "<empty>")]\n\(stepFailureMessage(for: error))\nNo step was run: every step is checked against the simulator's platform before the batch starts."
+                )
+            }
+        }
     }
 
     /// The user-facing text of a step failure. ArgumentParser errors are not `LocalizedError`, so

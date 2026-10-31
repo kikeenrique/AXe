@@ -178,7 +178,7 @@ capture_case version --version
 capture_case help --help
 
 SUBCOMMANDS=(
-  batch button describe-ui drag gesture hinge init key key-combo key-sequence
+  batch button crown describe-ui drag gesture hinge init key key-combo key-sequence
   list-simulators posture record-video remote rotate screenshot slider stream-video swipe tap
   touch type
 )

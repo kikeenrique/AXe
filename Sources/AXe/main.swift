@@ -24,6 +24,7 @@ struct Axe: AsyncParsableCommand {
             Drag.self,
             Button.self,
             Remote.self,
+            Crown.self,
             Key.self,
             KeySequence.self,
             KeyCombo.self,
