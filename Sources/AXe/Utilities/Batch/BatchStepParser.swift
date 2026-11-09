@@ -12,6 +12,7 @@ enum BatchStepKind: String {
     case keySequence = "key-sequence"
     case keyCombo = "key-combo"
     case remote
+    case focus
     case crown
     case sleep
     case hinge
@@ -63,6 +64,8 @@ struct BatchStepParser {
             return try await parseCommand(KeyCombo.self, arguments: arguments, context: context, logger: logger)
         case .remote:
             return try await parseCommand(Remote.self, arguments: arguments, context: context, logger: logger)
+        case .focus:
+            return try await parseCommand(Focus.self, arguments: arguments, context: context, logger: logger)
         case .crown:
             return try await parseCommand(Crown.self, arguments: arguments, context: context, logger: logger)
         case .hinge:
@@ -129,6 +132,9 @@ struct BatchStepParser {
         case .remote:
             _ = try parseStep(Remote.self, arguments: arguments)
             try PlatformSupport.check(.remote, on: platform)
+        case .focus:
+            _ = try parseStep(Focus.self, arguments: arguments)
+            try PlatformSupport.check(.focus, on: platform)
         case .crown:
             _ = try parseStep(Crown.self, arguments: arguments)
             try PlatformSupport.check(.crown, on: platform)

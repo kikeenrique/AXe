@@ -40,7 +40,6 @@ struct DescribedElement: AccessibilityFrameTree {
         hasText("AXLabel") || hasText("AXValue")
     }
 
-    /// True when the element reports `focused: true`.
     var isFocused: Bool {
         (json["focused"] as? NSNumber)?.boolValue == true
     }
@@ -169,9 +168,9 @@ enum DescribeUIOutput {
         return try serialize(json)
     }
 
-    static func focusedElement(in roots: [DescribedElement]) -> DescribedElement? {
-        var best: (element: DescribedElement, depth: Int)?
-        func visit(_ element: DescribedElement, depth: Int) {
+    static func focusedElement<Element: AccessibilityFrameTree>(in roots: [Element]) -> Element? {
+        var best: (element: Element, depth: Int)?
+        func visit(_ element: Element, depth: Int) {
             if element.isFocused, best.map({ depth > $0.depth }) ?? true {
                 best = (element, depth)
             }

@@ -6,6 +6,8 @@ import Foundation
 protocol AccessibilityFrameTree {
     var frame: AccessibilityElement.Frame? { get }
     var children: [Self]? { get }
+    /// True when the element reports `focused: true` (the tvOS focus engine's item).
+    var isFocused: Bool { get }
     func replacingChildren(_ children: [Self]) -> Self
     func replacingFrame(_ frame: AccessibilityElement.Frame) -> Self
     func mappingFrames(_ transform: (AccessibilityElement.Frame) -> AccessibilityElement.Frame) -> Self
@@ -30,11 +32,21 @@ struct AccessibilityElement: Decodable, AccessibilityFrameTree {
         "Toggle"
     ]
 
-    struct Frame: Decodable {
+    struct Frame: Decodable, Equatable, Hashable, Sendable {
         let x: Double
         let y: Double
         let width: Double
         let height: Double
+
+        var midX: Double { x + width / 2 }
+        var midY: Double { y + height / 2 }
+
+        /// Half-open containment, like `CGRect.contains`; an empty frame contains nothing.
+        func contains(x pointX: Double, y pointY: Double) -> Bool {
+            width > 0 && height > 0
+                && pointX >= x && pointX < x + width
+                && pointY >= y && pointY < y + height
+        }
     }
 
     let type: String?
@@ -48,6 +60,12 @@ struct AccessibilityElement: Decodable, AccessibilityFrameTree {
     let AXUniqueId: String?
     let AXIdentifier: String?
     let AXValue: String?
+    /// `focused` as describe-ui reports it: true on the focused element, false or null elsewhere.
+    let focused: Bool?
+
+    var isFocused: Bool {
+        focused == true
+    }
 
     enum CodingKeys: String, CodingKey {
         case type
@@ -60,6 +78,7 @@ struct AccessibilityElement: Decodable, AccessibilityFrameTree {
         case AXUniqueId
         case AXIdentifier
         case AXValue
+        case focused
     }
 
     init(from decoder: Decoder) throws {
@@ -75,6 +94,8 @@ struct AccessibilityElement: Decodable, AccessibilityFrameTree {
         AXUniqueId = try Self.decodeOptionalScalarString(from: container, forKey: .AXUniqueId)
         AXIdentifier = try Self.decodeOptionalScalarString(from: container, forKey: .AXIdentifier)
         AXValue = try Self.decodeOptionalScalarString(from: container, forKey: .AXValue)
+        // Any non-boolean value (absent, null, a number) reads as not focused.
+        focused = (try? container.decodeIfPresent(Bool.self, forKey: .focused)) ?? nil
     }
 
     private init(copying element: AccessibilityElement, frame: Frame?, children: [AccessibilityElement]?) {
@@ -88,6 +109,7 @@ struct AccessibilityElement: Decodable, AccessibilityFrameTree {
         AXUniqueId = element.AXUniqueId
         AXIdentifier = element.AXIdentifier
         AXValue = element.AXValue
+        focused = element.focused
     }
 
     /// A copy of the element with different children.

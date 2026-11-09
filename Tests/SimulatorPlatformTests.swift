@@ -832,7 +832,7 @@ struct BatchRunnerCacheTests {
     func crownDropsSnapshot() throws {
         let context = try seededContext()
         #expect(context.cachedRoots != nil)
-        let crown = BatchPrimitive.crownRotation(CrownRotation(delta: 50, steps: 10, intervalMilliseconds: 16))
+        let crown = BatchPrimitive.crownRotation(CrownRotation(delta: 50, steps: 10, intervalMilliseconds: 16), settle: UISettlePolicy())
         #expect(crown.invalidatesAccessibilitySnapshot)
         #expect(!crown.invalidatesDisplayState)
         BatchPlanRunner.invalidateCaches(after: crown, context: context)

@@ -13,8 +13,11 @@ enum BatchPrimitive {
     /// resent as two side-button presses (see `ButtonType.perform`).
     case buttonPress(ButtonType, duration: Double?)
     /// A Digital Crown rotation (watchOS). Runs as a barrier: IDB sends it over the scroll service,
-    /// a connection of its own, and returns once the simulator has taken every report.
-    case crownRotation(CrownRotation)
+    /// a connection of its own, and returns once the simulator has taken every report. With a
+    /// `settle` policy the runner then waits for the scrolled content to stop moving.
+    case crownRotation(CrownRotation, settle: UISettlePolicy?)
+    /// Moves tvOS focus to an element with remote presses, reading the tree between presses.
+    case focusNavigation(FocusRequest)
 
     /// Whether the primitive changes the display layout (fold, rotation), so cached display state
     /// must be re-read.
@@ -24,12 +27,13 @@ enum BatchPrimitive {
     }
 
     /// Whether the primitive moves on-screen elements in a way the runner knows about (fold,
-    /// rotation, Digital Crown scroll), so a `--ax-cache perBatch` snapshot must be dropped. Touch
-    /// steps (taps, swipes, gestures) are merged HID events and keep the snapshot, as before; use
-    /// `--ax-cache perStep` when they change the UI.
+    /// rotation, Digital Crown scroll, focus moves that scroll tvOS content), so a
+    /// `--ax-cache perBatch` snapshot must be dropped. Touch steps (taps, swipes, gestures) are
+    /// merged HID events and keep the snapshot, as before; use `--ax-cache perStep` when they
+    /// change the UI.
     var invalidatesAccessibilitySnapshot: Bool {
         switch self {
-        case .deviceState, .crownRotation:
+        case .deviceState, .crownRotation, .focusNavigation:
             return true
         case .hidMergeable, .hidBarrier, .hostSleep, .physicalTap, .buttonPress:
             return false

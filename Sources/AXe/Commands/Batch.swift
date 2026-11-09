@@ -8,14 +8,18 @@ struct Batch: AsyncParsableCommand {
         discussion: """
         Batch executes multiple interaction steps in one command to reduce overhead.
         Steps are executed in order. Before any step runs, every step's arguments are parsed and
-        the step is checked against the simulator's platform (touch off tvOS, remote on tvOS only,
-        crown on watchOS only, rotate and hinge on iOS only, the platform's buttons); a malformed or
-        refused step fails the batch with nothing sent. With --continue-on-error such a step fails
-        when its turn comes instead.
+        the step is checked against the simulator's platform (touch off tvOS, remote and focus on
+        tvOS only, crown on watchOS only, rotate and hinge on iOS only, the platform's buttons); a
+        malformed or refused step fails the batch with nothing sent. With --continue-on-error such
+        a step fails when its turn comes instead.
 
         Supported step commands:
           tap, swipe, gesture, touch, type, button, key, key-sequence, key-combo,
-          remote (tvOS only), crown (watchOS only)
+          remote (tvOS only), focus (tvOS only), crown (watchOS only)
+
+        A crown step waits for the scrolled content to settle unless it has --no-settle; a focus
+        step reads the accessibility tree between its presses. Both drop the --ax-cache perBatch
+        snapshot.
 
         Device-state steps (barriers; later steps re-read display and accessibility state):
           hinge <set <degrees>|open|close|half> [--duration <s>] [--no-wait]

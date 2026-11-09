@@ -79,21 +79,23 @@ axe rotate portrait --udid "$UDID"      # rotate the active display's interface
 | `tap`/`slider` with `--id`, `--label`, `--value` | yes | refused | refused |
 | `describe-ui` | yes (about 30 elements on the clock face and app grid); `--point` works | yes; the focused element has `focused: true`, `--focused` prints it | partial skeleton |
 | `button` | `home` (Digital Crown press), `side-button`, `lock`, `siri` | `play-pause`, `volume-up`, `volume-down` | refused |
-| `crown --delta <d>` | yes (Digital Crown rotation; needs Xcode 27 or later) | refused | refused |
+| `crown --delta <d>` | yes (Digital Crown rotation; needs Xcode 27 or later; waits for the scroll to settle) | refused | refused |
 | `remote up\|down\|left\|right\|select\|menu\|play-pause` | refused | yes | refused |
+| `focus --label <text>\|--id <id>` | refused | yes: moves focus to the element with d-pad presses | refused |
 | `type`, `key`, `key-sequence`, `key-combo` | sent, delivery unverified | yes: types straight into the focused text field | refused |
 | `rotate`, `hinge` | refused (iOS only) | refused | refused |
 | `batch` | as the single commands | as the single commands | refused |
 
-`batch` parses every step and checks it against the simulator's platform before it runs any, so a malformed step (`crown --steps 0`) or a refused one (a `tap` on tvOS, `crown` off watchOS) fails the batch with nothing sent.
+`batch` parses every step and checks it against the simulator's platform before it runs any, so a malformed step (`crown --steps 0`) or a refused one (a `tap` on tvOS, `crown` off watchOS, `focus` off tvOS) fails the batch with nothing sent. `crown` and `focus` are batch steps too.
 
-watchOS and tvOS applications answer their accessibility children only to automation clients, so the bundled IDB reads their trees as XCTest does. On tvOS, `describe-ui --focused` after `axe remote` shows where focus moved. visionOS input is refused because the bundled IDB drives only the touch digitizer service, which visionOS does not provide. The Siri Remote trackpad and visionOS pointer, gaze and hand input are not available.
+watchOS and tvOS applications answer their accessibility children only to automation clients, so the bundled IDB reads their trees as XCTest does. After a crown rotation, `crown` reads the accessibility tree until two consecutive reads match (about 1 s on watchOS 27.2), so the next command sees the final frames; `--settle-timeout` bounds the wait (default 3 s, a timeout only warns) and `--no-settle` skips it. On tvOS, `describe-ui --focused` after `axe remote` shows where focus moved, and `focus` moves it to an element by label or identifier: it presses the d-pad toward the target's frame and re-reads the tree until the target has focus (`--select` then presses select), failing when the target is not in the tree, focus stops moving, or `--max-steps` presses run out. tvOS lists keep only the items near focus in the tree. visionOS input is refused because the bundled IDB drives only the touch digitizer service, which visionOS does not provide. The Siri Remote trackpad and visionOS pointer, gaze and hand input are not available.
 
 ```bash
 axe crown --delta 50 --udid "$UDID"     # watchOS: scroll down about one and a half rows
 axe crown --delta=-50 --udid "$UDID"    # and back up
 axe remote down --udid "$UDID"          # tvOS: move focus
 axe describe-ui --focused --udid "$UDID" # the focused element
+axe focus --label "General" --select --udid "$UDID" # tvOS: focus an element and select it
 ```
 
 ## E2E development

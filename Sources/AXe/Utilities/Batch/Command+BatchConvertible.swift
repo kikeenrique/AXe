@@ -231,7 +231,18 @@ extension Remote: BatchConvertible {
 extension Crown: BatchConvertible {
     func toBatchPrimitives(context: BatchContext, logger: AxeLogger) async throws -> [BatchPrimitive] {
         try PlatformSupport.check(.crown, simulatorUDID: context.simulatorUDID, logger: logger)
-        return [.crownRotation(rotation)]
+        return [.crownRotation(rotation, settle: settlePolicy)]
+    }
+}
+
+extension Focus: BatchConvertible {
+    func toBatchPrimitives(context: BatchContext, logger: AxeLogger) async throws -> [BatchPrimitive] {
+        try PlatformSupport.check(.focus, simulatorUDID: context.simulatorUDID, logger: logger)
+        // The step's own --wait-timeout wins; otherwise the batch's applies, as for selector taps.
+        if waitTimeout > 0 {
+            return [.focusNavigation(request)]
+        }
+        return [.focusNavigation(request.waiting(seconds: context.waitTimeout, pollSeconds: context.pollInterval))]
     }
 }
 

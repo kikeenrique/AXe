@@ -8,7 +8,7 @@ Comprehensive reference for all AXe commands. Most simulator-interaction command
 axe list-simulators
 ```
 
-No `--udid` needed. Lists all available simulators with their UDIDs, boot state, runtime and platform (each line ends with `| Platform 'iOS|watchOS|tvOS|visionOS|unknown'`). Off iOS, commands the platform cannot take are refused before anything is sent: tvOS refuses touch (use `remote`), visionOS refuses all input, `rotate`/`hinge` are iOS only and `crown` is watchOS only. watchOS and tvOS have full accessibility trees: `describe-ui` and (on watchOS) selector taps work. On tvOS `posture` shows the `TVOut` display with role `external`.
+No `--udid` needed. Lists all available simulators with their UDIDs, boot state, runtime and platform (each line ends with `| Platform 'iOS|watchOS|tvOS|visionOS|unknown'`). Off iOS, commands the platform cannot take are refused before anything is sent: tvOS refuses touch (use `remote`, or `focus --label` to reach an element), visionOS refuses all input, `rotate`/`hinge` are iOS only, `remote`/`focus` are tvOS only and `crown` is watchOS only. watchOS and tvOS have full accessibility trees: `describe-ui` and (on watchOS) selector taps work. On tvOS `posture` shows the `TVOut` display with role `external`.
 
 ## Tap
 
@@ -176,15 +176,29 @@ axe remote play-pause --udid <UDID>
 
 `--count` is 1 to 100 (default 1); `--delay` is milliseconds between presses (default 150). Refused on other platforms. After a move, `axe describe-ui --focused --udid <UDID>` prints the element that now has focus.
 
+## Focus by selector (tvOS only)
+
+```bash
+axe focus --label 'General' --udid <UDID>               # move focus to the element labelled General
+axe focus --label 'Developer' --select --udid <UDID>    # then press select
+axe focus --id AppCell --max-steps 20 --udid <UDID>     # by accessibility identifier
+axe focus --label 'Screen Saver' --wait-timeout 3 --udid <UDID>   # after a screen change
+```
+
+Reads the tree, presses the d-pad from the focused element toward the target (up or down first, then left or right, by frame centres), re-reads, and repeats until the target has focus; prints `✓ Focused 'General' (2 remote press(es): down down)`. Buttons and cells win over text with the same label; focus on a cell that contains the target's text counts as reached; a no-break space in a label matches a plain space. Fails, after the presses already sent, when the target is not in the tree or is ambiguous, nothing has focus, focus stops moving (`Focus is stuck on ...`), or `--max-steps` presses (1 to 500, default 50) run out. tvOS lists keep only the items near focus in the tree, so a row far from focus is not found: move toward it with `axe remote` first. `--wait-timeout` (default 0) polls every `--poll-interval` seconds (default 0.25) for the target before the first press. Refused on other platforms.
+
 ## Digital Crown (watchOS only)
 
 ```bash
 axe crown --delta 50 --udid <UDID>              # scroll down about one and a half rows
 axe crown --delta=-50 --udid <UDID>             # negative: scroll up (also --delta -50)
 axe crown --delta 200 --steps 20 --interval-ms 16 --udid <UDID>
+axe crown --delta 50 --no-settle --udid <UDID>  # return without waiting for the scroll to stop
 ```
 
 The rotation is split into `--steps` reports (1 to 1000, default 10) `--interval-ms` apart (0 to 1000, default 16). The watch accelerates the crown: the same delta in fewer, larger or faster steps scrolls further. Pressing the crown is `axe button home`. Refused on other platforms.
+
+After the rotation, `crown` reads the accessibility tree every 0.1 s until two consecutive reads match, so the next command sees the final frames, and prints `✓ Digital Crown turned by 50 (settled in 1.0 s)`. `--settle-timeout <seconds>` bounds the wait (more than 0 and up to 60, default 3); when it runs out AXe prints a warning on stderr and still succeeds. `--no-settle` skips the wait (and cannot be combined with `--settle-timeout`).
 
 ## Batch (multi-step workflows)
 

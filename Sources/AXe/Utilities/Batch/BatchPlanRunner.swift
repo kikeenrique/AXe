@@ -43,11 +43,26 @@ struct BatchPlanRunner {
             case .buttonPress(let button, let duration):
                 try await flushPending()
                 try await button.perform(duration: duration, in: session, logger: logger)
-            case .crownRotation(let rotation):
+            case .crownRotation(let rotation, let settle):
                 try await flushPending()
                 // The rotation scrolls the content, so element frames in a cached tree are stale.
                 defer { invalidateCaches(after: primitive) }
                 try await rotation.perform(on: session.simulator, logger: logger)
+                if let settle {
+                    try await CrownRotation.waitForScrollToSettle(
+                        simulatorUDID: session.simulatorUDID,
+                        policy: settle,
+                        logger: logger
+                    )
+                }
+            case .focusNavigation(let request):
+                try await flushPending()
+                // Focus moves scroll tvOS content, so element frames in a cached tree are stale.
+                defer { invalidateCaches(after: primitive) }
+                let result = try await FocusNavigator.navigate(request, simulatorUDID: session.simulatorUDID, logger: logger) { action in
+                    try await HIDInteractor.performHIDEvent(action.pressEvent, in: session, logger: logger)
+                }
+                logger.info().log(result.summary)
             case .deviceState(let action):
                 try await flushPending()
                 defer { invalidateCaches(after: primitive) }
