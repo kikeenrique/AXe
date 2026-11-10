@@ -104,6 +104,16 @@ axe focus --label "General" --select --udid "$UDID" # tvOS: focus an element and
 
 To validate a release payload unchanged under another supported Xcode, first build the test bundle with that Xcode, then run `AXE_BIN_PATH=/path/to/release/axe ./test-runner.sh --tests-only`. The supplied executable must keep its packaged `AXe_AXe.bundle` and `Resources/` beside it.
 
+The watchOS and tvOS suites (`WatchOSTests`, `TVOSTests`) drive the system Settings app on a booted simulator of that platform and need no playground app. They are skipped unless `AXE_E2E=1` and `AXE_WATCHOS_E2E=1` or `AXE_TVOS_E2E=1` are set, so `swift test`, `make test` and CI never run them. Each suite uses the simulator in `AXE_WATCHOS_SIMULATOR_UDID` or `AXE_TVOS_SIMULATOR_UDID`, or else the only booted simulator of its platform (it fails when several are booted). Boot the simulators first; the suites relaunch Settings and leave the simulators booted. `AXE_E2E_ARTIFACTS_DIR` sets where screenshots are written (default: the system temporary directory).
+
+```bash
+swift build --build-tests
+AXE_BIN_PATH="$(swift build --show-bin-path)/axe" AXE_E2E=1 \
+  AXE_WATCHOS_E2E=1 AXE_WATCHOS_SIMULATOR_UDID=<watchOS UDID> \
+  AXE_TVOS_E2E=1 AXE_TVOS_SIMULATOR_UDID=<tvOS UDID> \
+  swift test --skip-build --no-parallel --filter 'WatchOSTests|TVOSTests'
+```
+
 ## Basic usage
 
 ```bash

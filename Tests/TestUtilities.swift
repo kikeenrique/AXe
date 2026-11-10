@@ -13,6 +13,16 @@ let isLandscapeE2EEnabled = {
     let raw = ProcessInfo.processInfo.environment["AXE_LANDSCAPE_E2E"]?.lowercased() ?? ""
     return isE2EEnabled && (raw == "1" || raw == "true" || raw == "yes")
 }()
+/// watchOS simulator tests; the simulator comes from `AXE_WATCHOS_SIMULATOR_UDID` or the only booted watchOS simulator.
+let isWatchOSE2EEnabled = {
+    let raw = ProcessInfo.processInfo.environment["AXE_WATCHOS_E2E"]?.lowercased() ?? ""
+    return isE2EEnabled && (raw == "1" || raw == "true" || raw == "yes")
+}()
+/// tvOS simulator tests; the simulator comes from `AXE_TVOS_SIMULATOR_UDID` or the only booted tvOS simulator.
+let isTVOSE2EEnabled = {
+    let raw = ProcessInfo.processInfo.environment["AXE_TVOS_E2E"]?.lowercased() ?? ""
+    return isE2EEnabled && (raw == "1" || raw == "true" || raw == "yes")
+}()
 
 struct CommandOutput {
     let output: String

@@ -61,6 +61,8 @@ show_usage() {
     echo "  DEVELOPER_DIR         Xcode used to build and run tests (Xcode 27 uses Device Hub)"
     echo "  AXE_BIN_PATH          Prebuilt AXe executable to test with --tests-only"
     echo "  AXE_LANDSCAPE_E2E=1  Run gated landscape orientation precision tests when Simulator menu automation is available"
+    echo "  AXE_WATCHOS_E2E=1    Run the gated watchOS suite (WatchOSTests) on AXE_WATCHOS_SIMULATOR_UDID or the only booted watchOS simulator"
+    echo "  AXE_TVOS_E2E=1       Run the gated tvOS suite (TVOSTests) on AXE_TVOS_SIMULATOR_UDID or the only booted tvOS simulator"
     echo ""
     echo "Test Filters (optional):"
     echo "  SwipeTests          Run only swipe tests"
@@ -80,6 +82,8 @@ show_usage() {
     echo "  RecordVideoTests    Run only record video tests"
     echo "  StreamVideoDebugTests Run only stream video debug tests"
     echo "  StreamVideoTests    Run only stream video tests"
+    echo "  WatchOSTests        Run only watchOS simulator tests (needs AXE_WATCHOS_E2E=1)"
+    echo "  TVOSTests           Run only tvOS simulator tests (needs AXE_TVOS_E2E=1)"
     echo ""
     echo "Examples:"
     echo "  $0                  # Build everything and run all tests"
@@ -139,7 +143,7 @@ while [[ $# -gt 0 ]]; do
             VERBOSE=true
             shift
             ;;
-        BatchTests|ButtonTests|DescribeUITests|GestureTests|InitTests|KeyComboTests|KeySequenceTests|KeyTests|ListSimulatorsTests|RecordVideoTests|StreamVideoDebugTests|StreamVideoTests|SwipeTests|DragTests|SliderTests|TapTests|TouchTests|TypeTests)
+        BatchTests|ButtonTests|DescribeUITests|GestureTests|InitTests|KeyComboTests|KeySequenceTests|KeyTests|ListSimulatorsTests|RecordVideoTests|StreamVideoDebugTests|StreamVideoTests|SwipeTests|DragTests|SliderTests|TapTests|TouchTests|TypeTests|WatchOSTests|TVOSTests)
             TEST_FILTER="$1"
             shift
             ;;

@@ -6,6 +6,8 @@ struct UIElement: Decodable {
     let children: [UIElement]?
     let role: String?
     let enabled: Bool?
+    let focused: Bool?
+    let pid: Int?
     let title: String?
     let subrole: String?
     let contentRequired: Bool?
@@ -24,6 +26,8 @@ struct UIElement: Decodable {
         case children
         case role
         case enabled
+        case focused
+        case pid
         case title
         case subrole
         case contentRequired = "content_required"
@@ -45,6 +49,8 @@ struct UIElement: Decodable {
         children = try container.decodeIfPresent([UIElement].self, forKey: .children)
         role = try Self.decodeOptionalScalarString(from: container, forKey: .role)
         enabled = try container.decodeIfPresent(Bool.self, forKey: .enabled)
+        focused = try container.decodeIfPresent(Bool.self, forKey: .focused)
+        pid = try? container.decodeIfPresent(Int.self, forKey: .pid)
         title = try Self.decodeOptionalScalarString(from: container, forKey: .title)
         subrole = try Self.decodeOptionalScalarString(from: container, forKey: .subrole)
         contentRequired = try container.decodeIfPresent(Bool.self, forKey: .contentRequired)
